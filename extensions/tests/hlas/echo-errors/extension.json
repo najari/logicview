@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA for Async Serial: echoes frames without result_types and raises on '!'",
+  "name": "Echo Errors",
+  "extensions": {
+    "Echo": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "echo.Echo"
+    },
+    "Speed": {
+      "type": "DigitalMeasurement",
+      "entryPoint": "echo.Unused"
+    }
+  }
+}

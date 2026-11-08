@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA: one frame per SPI chip-select burst",
+  "name": "SPI Burst",
+  "extensions": {
+    "SpiBurst": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.SpiBurst"
+    }
+  }
+}

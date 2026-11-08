@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA for Async Serial written against the pre-1.0 HLA API",
+  "name": "Legacy API",
+  "extensions": {
+    "Legacy": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.Hla"
+    }
+  }
+}

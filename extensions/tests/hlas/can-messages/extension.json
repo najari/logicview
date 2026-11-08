@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA: one frame per CAN message",
+  "name": "CAN Messages",
+  "extensions": {
+    "CanMessages": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.CanMessages"
+    }
+  }
+}

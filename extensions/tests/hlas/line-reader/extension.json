@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA: joins Async Serial characters into text lines",
+  "name": "Line Reader",
+  "extensions": {
+    "LineReader": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.LineReader"
+    }
+  }
+}

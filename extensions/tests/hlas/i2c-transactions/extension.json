@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA: one frame per I2C transaction",
+  "name": "I2C Transactions",
+  "extensions": {
+    "I2cTransactions": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.I2cTransactions"
+    }
+  }
+}

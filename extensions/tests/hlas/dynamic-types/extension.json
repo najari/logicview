@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA for Async Serial: result type added in __init__, choices from dict keys",
+  "name": "Dynamic Types",
+  "extensions": {
+    "Dynamic Types": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "dynamic.Dynamic"
+    }
+  }
+}

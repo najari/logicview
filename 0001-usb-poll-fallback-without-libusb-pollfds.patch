@@ -1,0 +1,125 @@
+usb: poll libusb events when libusb exposes no poll FDs
+
+Stock libusb on Windows (as shipped by MSYS2 and bundled with the SLogic
+apps) returns NULL from libusb_get_pollfds(). usb_source_new() then failed
+with "Failed to get libusb file descriptors." and every driver using
+usb_source_add() (fx2lafw and others) stopped right after starting an
+acquisition. Official sigrok Windows builds avoid this with a patched
+libusb. Instead, fall back to dispatching the source every
+USB_SOURCE_POLL_MS so the driver callback (which calls
+libusb_handle_events_timeout()) still runs on the session main loop.
+
+diff --git a/src/usb.c b/src/usb.c
+index feafe9d..2cdbfd9 100644
+--- a/src/usb.c
++++ b/src/usb.c
+@@ -37,6 +37,13 @@
+ typedef int libusb_os_handle;
+ #endif
+ 
++/*
++ * Poll interval used when libusb cannot expose pollable event sources.
++ * Stock libusb on Windows returns NULL from libusb_get_pollfds(), so the
++ * USB event source then handles events on a short timer instead.
++ */
++#define USB_SOURCE_POLL_MS 1
++
+ /** Custom GLib event source for libusb I/O.
+  */
+ struct usb_source {
+@@ -45,6 +52,10 @@ struct usb_source {
+ 	int64_t timeout_us;
+ 	int64_t due_us;
+ 
++	/* Polling fallback; poll_us is 0 when libusb provides poll FDs. */
++	int64_t poll_us;
++	int64_t poll_due_us;
++
+ 	/* Needed to keep track of installed sources */
+ 	struct sr_session *session;
+ 
+@@ -59,6 +70,7 @@ static gboolean usb_source_prepare(GSource *source, int *timeout)
+ 	int64_t now_us, usb_due_us;
+ 	struct usb_source *usource;
+ 	struct timeval usb_timeout;
++	int64_t due_us;
+ 	int remaining_ms;
+ 	int ret;
+ 
+@@ -81,8 +93,14 @@ static gboolean usb_source_prepare(GSource *source, int *timeout)
+ 		if (usb_due_us < usource->due_us)
+ 			usource->due_us = usb_due_us;
+ 	}
+-	if (usource->due_us != INT64_MAX)
+-		remaining_ms = (MAX(0, usource->due_us - now_us) + 999) / 1000;
++	due_us = usource->due_us;
++	if (usource->poll_us > 0) {
++		if (usource->poll_due_us == 0)
++			usource->poll_due_us = now_us + usource->poll_us;
++		due_us = MIN(due_us, usource->poll_due_us);
++	}
++	if (due_us != INT64_MAX)
++		remaining_ms = (MAX(0, due_us - now_us) + 999) / 1000;
+ 	else
+ 		remaining_ms = -1;
+ 
+@@ -99,6 +117,7 @@ static gboolean usb_source_check(GSource *source)
+ 	GPollFD *pollfd;
+ 	unsigned int revents;
+ 	unsigned int i;
++	int64_t now_us;
+ 
+ 	usource = (struct usb_source *)source;
+ 	revents = 0;
+@@ -107,8 +126,11 @@ static gboolean usb_source_check(GSource *source)
+ 		pollfd = g_ptr_array_index(usource->pollfds, i);
+ 		revents |= pollfd->revents;
+ 	}
++	now_us = g_source_get_time(source);
++	if (usource->poll_us > 0 && usource->poll_due_us <= now_us)
++		return TRUE;
+ 	return (revents != 0 || (usource->due_us != INT64_MAX
+-			&& usource->due_us <= g_source_get_time(source)));
++			&& usource->due_us <= now_us));
+ }
+ 
+ /** USB event source dispatch() method.
+@@ -146,6 +168,9 @@ static gboolean usb_source_dispatch(GSource *source,
+ 					+ usource->timeout_us;
+ 		else
+ 			usource->due_us = INT64_MAX;
++		if (usource->poll_us > 0)
++			usource->poll_due_us = g_source_get_time(source)
++					+ usource->poll_us;
+ 	}
+ 	return keep;
+ }
+@@ -262,10 +287,10 @@ static GSource *usb_source_new(struct sr_session *session,
+ 	const struct libusb_pollfd **upollfds, **upfd;
+ 
+ 	upollfds = libusb_get_pollfds(usb_ctx);
+-	if (!upollfds) {
+-		sr_err("Failed to get libusb file descriptors.");
+-		return NULL;
+-	}
++	if (!upollfds)
++		sr_dbg("libusb provides no pollable event sources (stock "
++			"libusb on Windows); polling every %d ms instead.",
++			USB_SOURCE_POLL_MS);
+ 	source = g_source_new(&usb_source_funcs, sizeof(struct usb_source));
+ 	usource = (struct usb_source *)source;
+ 
+@@ -281,6 +306,13 @@ static GSource *usb_source_new(struct sr_session *session,
+ 	usource->session = session;
+ 	usource->usb_ctx = usb_ctx;
+ 	usource->pollfds = g_ptr_array_new_full(8, &usb_source_free_pollfd);
++	usource->poll_us = 0;
++	usource->poll_due_us = 0;
++
++	if (!upollfds) {
++		usource->poll_us = 1000 * (int64_t)USB_SOURCE_POLL_MS;
++		return source;
++	}
+ 
+ 	for (upfd = upollfds; *upfd != NULL; upfd++)
+ 		usb_pollfd_added((*upfd)->fd, (*upfd)->events, usource);

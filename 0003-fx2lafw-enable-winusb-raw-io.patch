@@ -1,0 +1,62 @@
+fx2lafw: enable WinUSB RAW_IO on the bulk IN endpoint
+
+Without RAW_IO, WinUSB passes only one bulk IN request at a time to the host
+controller (libusb issue #490). The gap between one transfer completing and
+the next starting is enough for the FX2's small endpoint buffer to overflow
+at high samplerates: at 24 MHz the first 240 KB transfer completed and every
+later transfer timed out with 0 bytes. Enable RAW_IO (libusb >= 1.0.30 API,
+as the sipeed-slogic-analyzer driver already does) so all submitted
+transfers stay queued in the host controller. Kept off when the transfer
+size exceeds the endpoint's RAW_IO maximum; a no-op outside WinUSB.
+
+--- a/src/hardware/fx2lafw/protocol.c
++++ b/src/hardware/fx2lafw/protocol.c
+@@ -639,6 +639,40 @@
+ 	return TRUE;
+ }
+ 
++/*
++ * Without RAW_IO, WinUSB hands only one bulk IN request at a time to the host
++ * controller, so the endpoint is not read between one transfer completing and
++ * the next one starting. At high samplerates the FX2's few KiB of endpoint
++ * buffer overflow in that gap and the device stops sending (every later
++ * transfer times out with 0 bytes). With RAW_IO all submitted transfers stay
++ * queued in the host controller. RAW_IO needs each transfer to be a multiple
++ * of the packet size (get_buffer_size() rounds to 512) and within the
++ * endpoint's maximum, so it is only kept on when the buffer fits.
++ * Outside WinUSB libusb reports RAW_IO as not supported; nothing changes.
++ */
++static void set_raw_io(struct libusb_device_handle *devhdl, size_t size)
++{
++#if defined(LIBUSB_API_VERSION) && (LIBUSB_API_VERSION >= 0x0100010C)
++	const uint8_t ep = 2 | LIBUSB_ENDPOINT_IN;
++	int max;
++
++	if (libusb_endpoint_set_raw_io(devhdl, ep, 1) != LIBUSB_SUCCESS)
++		return;
++	max = libusb_get_max_raw_io_transfer_size(devhdl, ep);
++	if (max <= 0 || size > (size_t)max) {
++		libusb_endpoint_set_raw_io(devhdl, ep, 0);
++		sr_dbg("RAW_IO not used: transfer size %zu, maximum %d.",
++			size, max);
++		return;
++	}
++	sr_dbg("RAW_IO enabled on bulk IN (transfer size %zu, maximum %d).",
++		size, max);
++#else
++	(void)devhdl;
++	(void)size;
++#endif
++}
++
+ static int start_transfers(const struct sr_dev_inst *sdi)
+ {
+ 	struct dev_context *devc;
+@@ -673,6 +707,7 @@
+ 	num_transfers = get_number_of_transfers(devc);
+ 
+ 	size = get_buffer_size(devc);
++	set_raw_io(usb->devhdl, size);
+ 	devc->submitted_transfers = 0;
+ 
+ 	devc->transfers = g_try_malloc0(sizeof(*devc->transfers) * num_transfers);

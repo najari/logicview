@@ -1,0 +1,30 @@
+fx2lafw: clear the bulk IN halt after a STALL
+
+With stock libusb on Windows a STALL on EP2 IN leaves the WinUSB pipe
+halted: every later transfer times out with 0 bytes until the empty-transfer
+limit aborts the acquisition. (sigrok's own Windows builds use a patched
+libusb that aborts and recovers the pipe.) Clear the halt when a transfer
+reports LIBUSB_TRANSFER_STALL, then resubmit as before.
+
+diff --git a/src/hardware/fx2lafw/protocol.c b/src/hardware/fx2lafw/protocol.c
+index 8854f5a..5067adb 100644
+--- a/src/hardware/fx2lafw/protocol.c
++++ b/src/hardware/fx2lafw/protocol.c
+@@ -448,6 +448,17 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
+ 	case LIBUSB_TRANSFER_COMPLETED:
+ 	case LIBUSB_TRANSFER_TIMED_OUT: /* We may have received some data though. */
+ 		break;
++	case LIBUSB_TRANSFER_STALL:
++		/*
++		 * The endpoint is halted (device STALL or a bus error the host
++		 * controller reports the same way). Stock libusb on Windows
++		 * leaves the pipe halted, so every later transfer just times
++		 * out. Clear the halt so the resubmitted transfers can run.
++		 */
++		sr_warn("Bulk IN endpoint stalled, clearing halt.");
++		libusb_clear_halt(transfer->dev_handle, transfer->endpoint);
++		packet_has_error = TRUE;
++		break;
+ 	default:
+ 		packet_has_error = TRUE;
+ 		break;

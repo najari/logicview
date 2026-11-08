@@ -1,0 +1,4 @@
+* text=auto
+# patch(1) and bash need LF even on a Windows checkout (core.autocrlf=true).
+*.patch text eol=lf
+*.sh text eol=lf

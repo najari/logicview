@@ -26,6 +26,11 @@ Windows 기본 libusb에서 fx2lafw가 제대로 동작하도록 패치 3개를 
 | `extensions/compat/` | Logic 2 확장 API 호환 계층: `saleae` 모듈(API 대체 구현) + `saleae_bridge.py`(sigrok 디코더 ↔ HLA 변환) |
 | `extensions/template/` | 확장마다 만들어지는 디코더 패키지의 `__init__.py`, `pd.py` |
 | `extensions/tests/` | 테스트 HLA 7개, 단위 테스트(`run-tests.ps1`), 합성 캡처·세션 생성기(`make-capture.py`) |
+| `build-sigrok-cli.sh` | 같은 SLogic 커밋의 libsigrokdecode + sigrok-cli 빌드 (MCP 서버용, MSYS2 UCRT64) |
+| `sigrok-cli-patches/0001-windows-1ms-timer-resolution.patch` | sigrok-cli가 Windows 타이머 해상도를 1 ms로 올림. 기본 15.6 ms에서는 USB 이벤트 처리가 밀려 24 MHz 수집이 끊김 |
+| `mcp/logicview_mcp.py` | Saleae Logic 2 MCP 서버와 같은 도구를 제공하는 MCP 서버 ([아래](#mcp-서버)) |
+| `mcp/start-mcp.cmd` | 앱 폴더에서 MCP 서버 실행 |
+| `mcp/tests/test_mcp.py` | MCP 서버 종단 테스트 (HTTP로 모든 도구 호출, `--hardware`로 실제 캡처) |
 
 ## 준비물
 
@@ -45,16 +50,20 @@ SLogic 소스 받기 (PowerShell 또는 아무 셸):
 ```sh
 git clone https://github.com/sipeed/SLogic.git
 git -C SLogic checkout release-2.3.3
-git -C SLogic submodule update --init sources/libsigrok
+git -C SLogic submodule update --init sources/libsigrok sources/libsigrokdecode sources/sigrok-cli
 ```
-빌드 (MSYS2 UCRT64 셸, `SLogic`과 이 저장소가 있는 폴더에서):
+빌드 (MSYS2 UCRT64 셸, `SLogic`과 이 저장소가 있는 폴더에서). 두 번째 줄(MCP 서버용
+sigrok-cli)은 `pacman -S mingw-w64-ucrt-x86_64-python`이 더 필요하다:
 ```sh
 bash logicview/build-libsigrok-fx2lafw.sh SLogic logicview/build
+bash logicview/build-sigrok-cli.sh SLogic logicview/build
 ```
-조립 (PowerShell):
+조립 (PowerShell). `-SigrokCli`를 주면 `sigrok-cli.exe`, `python.exe`(앱에 들어 있는
+Python 3.14 런타임으로 실행되는 MSYS2 실행 파일), `mcp\`도 넣는다. `extensions\`는 항상 들어간다:
 ```powershell
 .\logicview\assemble-slogicview.ps1 -ReleaseExe <SLogicView-...-windows-x86_64.exe> `
-  -LibsigrokDll .\logicview\build\prefix\bin\libsigrok-4.dll -Destination <새 앱 폴더>
+  -LibsigrokDll .\logicview\build\prefix\bin\libsigrok-4.dll `
+  -SigrokCli .\logicview\build\prefix\bin\sigrok-cli.exe -Destination <새 앱 폴더>
 ```
 확인 (MSYS2 UCRT64 셸): `bash logicview/verify-app.sh <새 앱 폴더>` → 모든 파일에서 `ALL IMPORTS RESOLVED`
 
@@ -86,6 +95,11 @@ DLL만 교체하므로 릴리스에 들어 있는 libsigrok 서브모듈과 같�
 
 외부 USB 허브(VIA `2109:0812`)를 거치면 SLogicView, PulseView 모두 수 초 안에 STALL로
 멈췄다. 애널라이저는 PC 본체 포트에 직접 꽂아서 쓸 것.
+
+같은 날 저녁 재시험(장치 위치 `usb/2-2`)에서는 24 MHz가 SLogicView와 sigrok-cli 모두
+수백 ms 뒤 끊겼다(장치가 전송을 멈추고 이후 전송은 시간 초과). 12 MHz와 16 MHz는 4번씩
+모두 끝까지 받았다. 소프트웨어는 같으므로 USB 포트·버스 상태에 따라 24 MHz가 한계에 걸리는
+것으로 보인다. 24 MHz가 끊기면 다른 본체 포트를 쓰거나 16 MHz 이하로 수집할 것.
 
 ## Saleae Logic 2 확장(HLA) 사용
 
@@ -146,6 +160,50 @@ $env:SALEAE_HLA_TRACE = 1; & <앱 폴더>\slogicview.exe -s test.pvs test.sr
 결과 (2026-11-08): 단위 테스트 22개 통과. SLogicView 2.3.3에서 합성 캡처(UART "Hi", "ok!",
 I2C 쓰기/읽기, SPI 3워드, CAN 표준·확장 프레임)를 테스트 HLA 5개가 기대한 대로 디코딩했고,
 HLA 예외는 오류 주석으로, 옛 API 확장은 불러오기 오류로만 처리되었다.
+
+## MCP 서버
+
+Saleae Logic 2의 MCP 서버(Settings > Automation > MCP Server)와 같은 도구 이름·인자·결과
+형식을 제공하는 MCP 서버. AI 도구(Claude Code, Codex 등)가 이 애널라이저로 캡처하고,
+디코딩하고, 결과를 내보낼 수 있다. 실제 작업은 앱 폴더의 `sigrok-cli.exe`가 하므로
+SLogicView와 같은 드라이버·디코더·HLA 호환 계층을 쓴다. Python 표준 라이브러리만 쓴다.
+
+```powershell
+<앱 폴더>\mcp\start-mcp.cmd              # HTTP, http://127.0.0.1:10530 (Logic 2와 같은 기본 포트)
+claude mcp add --transport http logicview http://127.0.0.1:10530
+# 또는 클라이언트가 서버를 직접 띄우는 stdio 방식
+claude mcp add logicview -- "<앱 폴더>\python.exe" -I "<앱 폴더>\mcp\logicview_mcp.py" --stdio
+```
+
+| 도구 | 동작 |
+|---|---|
+| `get_devices` | 연결된 애널라이저 목록 (`deviceId` 예: `fx2lafw:conn=2.1`) |
+| `start_capture` | 디지털 채널, 샘플레이트, 수동/시간 지정/에지 트리거 모드로 캡처 시작 |
+| `stop_capture`, `wait_capture` | 캡처 중지(정상 종료), 끝날 때까지 대기 |
+| `load_capture`, `save_capture`, `close_capture` | sigrok 세션 파일(.sr) 열기·저장, 캡처 닫기 |
+| `add_analyzer`, `remove_analyzer` | "Async Serial", "I2C", "SPI", "CAN"(Logic 2 설정 이름) 또는 sigrok 디코더 id로 디코딩 |
+| `add_high_level_analyzer`, `remove_high_level_analyzer` | Logic 2 HLA 확장 폴더를 지정해 분석기 위에 실행 |
+| `export_raw_data_csv`, `export_raw_data_binary` | 원시 데이터를 CSV(변화 시점마다 한 줄) 또는 Logic 2 바이너리 형식(`digital_N.bin`)으로 |
+| `export_data_table_csv`, `legacy_export_analyzer` | 디코딩 결과를 CSV로 (필터, 열 선택, 진법 지원) |
+| `read_analyzer_frames` | logicview 추가 도구: 디코딩 결과를 파일 없이 바로 반환 |
+
+Logic 2와 다른 점:
+- 캡처 파일은 `.sal`이 아니라 sigrok 세션 파일 `.sr`이다 (SLogicView에서 바로 열린다).
+- 아날로그 채널, 임계 전압, 글리치 필터, 펄스 폭 트리거는 하드웨어에 없어서 오류로 알린다.
+  에지 트리거는 상승/하강 + 다른 채널 레벨 조건을 지원하고 10 %는 트리거 이전 데이터다.
+- 데이터 테이블 CSV는 `name, type, start_time, duration, value` 열이다 (값은 디코더가 표시하는 글자).
+- 캡처를 시작하면 장치를 여는 데 약 0.6초가 걸린 뒤 데이터가 들어온다.
+- SLogicView가 장치를 열어 둔 동안에는 캡처할 수 없다 (파일 분석은 가능).
+- 캡처와 설치된 HLA는 `%LOCALAPPDATA%\logicview\mcp`에 둔다.
+
+테스트:
+```powershell
+<앱 폴더>\python.exe -I .\mcp\tests\test_mcp.py --python <앱 폴더>\python.exe `
+  --sigrok-cli <앱 폴더>\sigrok-cli.exe --server <앱 폴더>\mcp\logicview_mcp.py --hardware
+```
+결과 (2026-11-08): 원본 릴리스에서 새로 조립한 앱 폴더로 42개 통과. 합성 캡처로 모든 도구와 오류
+처리를 확인했다. 실제 장치로는 장치 검색, 1 MHz 0.25초 캡처(정확히 250,000 샘플), 16 MHz 수동
+캡처와 중지를 확인했다. 트리거 캡처는 입력 신호가 없어서 실제로 시험하지 못했다.
 
 ## 라이선스
 

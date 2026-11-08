@@ -5,7 +5,10 @@ set -uo pipefail
 A=${1:?app folder}; EXE=${2:-slogicview.exe}
 S="$(dirname "$0")/check-imports.sh"
 rc=0
-for f in libsigrok-4.dll libz-1.dll libsigrokcxx-4.dll "$EXE"; do
+files="libsigrok-4.dll libz-1.dll libsigrokcxx-4.dll $EXE"
+# Added by assemble-slogicview.ps1 -SigrokCli.
+for f in sigrok-cli.exe python.exe; do [ -f "$A/$f" ] && files="$files $f"; done
+for f in $files; do
     echo "### $f"
     bash "$S" "$A/$f" "$A" | grep -E 'libsigrok-4|missing|NOT IN|symbols|RESOLVED' || true
     bash "$S" "$A/$f" "$A" >/dev/null || rc=1

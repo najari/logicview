@@ -177,6 +177,7 @@ function Install-Extension([string]$Src) {
                     slug           = $slug
                     input          = $p
                     entry          = [string]$h.Value.entryPoint
+                    hla_name       = [string]$h.Name
                     name           = "$title [$p]"
                     longname       = "$title (Saleae HLA on $($Labels[$p]))"
                     desc           = if ($json.description) { [string]$json.description } else { "Saleae Logic 2 HLA $title" }

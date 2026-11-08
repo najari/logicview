@@ -1,0 +1,60 @@
+sigrok-cli: 1 ms timer resolution on Windows
+
+Stock libusb on Windows exposes no pollable event sources, so libsigrok
+(patch 0001) dispatches USB events from a 1 ms timer. sigrok-cli runs a
+plain GLib main loop, where that timer only fires at the default 15.6 ms
+Windows timer resolution; at 24 MHz fx2lafw then fell behind and the
+device stopped sending after a few hundred ms. Raise the resolution to
+1 ms with timeBeginPeriod() (winmm.dll, loaded at run time), as Qt does
+for SLogicView/PulseView.
+
+
+--- a/main.c	2026-11-08 18:47:20.302722100 +0900
++++ b/main.c	2026-11-08 18:47:20.333982200 +0900
+@@ -20,6 +20,9 @@
+ #include <config.h>
+ #include <stdlib.h>
+ #include <glib.h>
++#ifdef _WIN32
++#include <windows.h>
++#endif
+ #include "sigrok-cli.h"
+ 
+ struct sr_context *sr_ctx = NULL;
+@@ -228,9 +231,36 @@
+ 	sr_dev_close(sdi);
+ }
+ 
++#ifdef _WIN32
++/*
++ * Stock libusb on Windows exposes no pollable event sources, so libsigrok
++ * polls USB events from a 1 ms timer. With the default 15.6 ms Windows timer
++ * resolution that timer fires ~64 times per second, which is too slow for
++ * fast acquisitions (fx2lafw at 24 MHz stopped after a few hundred ms).
++ * Qt frontends get 1 ms resolution from Qt; ask for it here too.
++ */
++static void raise_timer_resolution(void)
++{
++	typedef UINT (WINAPI *time_begin_period_fn)(UINT);
++	HMODULE winmm;
++	time_begin_period_fn time_begin_period;
++
++	winmm = LoadLibraryA("winmm.dll");
++	if (!winmm)
++		return;
++	time_begin_period = (time_begin_period_fn)(void *)
++		GetProcAddress(winmm, "timeBeginPeriod");
++	if (time_begin_period)
++		time_begin_period(1);
++}
++#endif
++
+ int main(int argc, char **argv)
+ {
+ 	g_log_set_default_handler(logger, NULL);
++#ifdef _WIN32
++	raise_timer_resolution();
++#endif
+ 
+ 	if (parse_options(argc, argv)) {
+ 		return 1;

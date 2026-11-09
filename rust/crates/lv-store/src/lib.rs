@@ -61,6 +61,8 @@ pub struct CaptureInfo {
     pub num_samples: u64,
     pub status: Status,
     pub channel_names: Vec<String>,
+    /// `channel.enabled`: shown in the viewer (UI-6).
+    pub channel_enabled: Vec<bool>,
     /// `capture.trigger_json`: the trigger and where it fired (CAP-8).
     pub trigger: Option<String>,
 }
@@ -92,3 +94,31 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Fold a leftover WAL back into the capture so it is one file again. The
+/// writer does this itself unless a reader had the file open at the end.
+pub fn fold_wal(path: &std::path::Path) -> Result<()> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    let _: String = conn.query_row("PRAGMA journal_mode = DELETE", [], |r| r.get(0))?;
+    Ok(())
+}
+
+/// Rename channels and choose which are shown (UI-6) in a capture file
+/// that is not being recorded.
+pub fn update_channels(path: &std::path::Path, names: &[String], enabled: &[bool]) -> Result<()> {
+    let mut conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    let tx = conn.transaction()?;
+    for (i, (name, on)) in names.iter().zip(enabled).enumerate() {
+        tx.execute(
+            "UPDATE channel SET name = ?1, enabled = ?2
+             WHERE capture_id = (SELECT id FROM capture ORDER BY id LIMIT 1) AND idx = ?3",
+            rusqlite::params![name, *on as i64, i as i64],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}

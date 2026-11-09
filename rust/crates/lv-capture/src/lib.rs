@@ -129,21 +129,23 @@ pub enum Outcome {
 impl Outcome {
     pub fn describe(self) -> &'static str {
         match self {
-            Outcome::Complete => "complete",
-            Outcome::Stopped => "stopped by user",
-            Outcome::NotTriggered => "stopped by user before the trigger fired; nothing stored",
-            Outcome::Overflow => "stopped: storage could not keep up with the sample rate",
+            Outcome::Complete => "완료",
+            Outcome::Stopped => "사용자가 중지함 (받은 데이터는 모두 저장)",
+            Outcome::NotTriggered => "트리거가 걸리기 전에 중지함 (저장한 데이터 없음)",
+            Outcome::Overflow => {
+                "중지: 저장이 수집 속도를 따라가지 못함 (샘플레이트를 낮추거나 더 빠른 디스크에 저장)"
+            }
             Outcome::DeviceError(StreamEnd::DeviceStopped) => {
-                "stopped: the device stopped sending data, its buffer overflowed \
-                 (this USB port could not keep up: use a lower rate, a port on the PC \
-                 without a hub, or another PC port)"
+                "중지: 장치 버퍼가 넘쳐 데이터가 끊김 (이 USB 포트가 속도를 따라가지 못함: \
+                 샘플레이트를 낮추거나, 허브 없이 PC 본체 포트에 꽂거나, 다른 본체 포트를 쓸 것)"
             }
             Outcome::DeviceError(StreamEnd::Stalled) => {
-                "stopped: the USB pipe stalled (use a port on the PC without a hub, \
-                 or another PC port)"
+                "중지: USB 파이프 STALL (허브 없이 PC 본체 포트에 꽂거나 다른 본체 포트를 쓸 것)"
             }
-            Outcome::DeviceError(StreamEnd::Disconnected) => "stopped: the device was unplugged",
-            Outcome::DeviceError(_) => "stopped: device error",
+            Outcome::DeviceError(StreamEnd::Disconnected) => {
+                "중지: 장치가 빠짐 (그때까지 받은 데이터는 저장)"
+            }
+            Outcome::DeviceError(_) => "중지: 장치 오류",
         }
     }
 
@@ -304,6 +306,11 @@ impl Capture {
 
     pub fn progress(&self) -> &Progress {
         &self.progress
+    }
+
+    /// The live counters, to watch from another thread (CAP-7).
+    pub fn progress_handle(&self) -> Arc<Progress> {
+        self.progress.clone()
     }
 
     /// Ask the capture to stop; [`Capture::wait`] then returns.

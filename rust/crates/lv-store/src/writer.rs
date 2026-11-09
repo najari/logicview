@@ -40,7 +40,14 @@ pub struct CaptureWriter {
     uncommitted: usize,
     compressor: zstd::bulk::Compressor<'static>,
     stats: WriteStats,
+    last_commit: Instant,
+    /// When the current chunk (full or partial) was last written.
+    last_flush: Instant,
 }
+
+/// Readers see new samples at least this often while recording (UI-8):
+/// transactions are committed and a part-filled chunk is written out.
+const LIVE_INTERVAL: Duration = Duration::from_millis(250);
 
 fn remove_db_files(path: &Path) -> Result<()> {
     for suffix in ["", "-wal", "-shm"] {
@@ -105,6 +112,7 @@ impl CaptureWriter {
                 num_samples: 0,
                 status: Status::Recording,
                 channel_names: cap.channel_names.clone(),
+                channel_enabled: vec![true; cap.channel_names.len()],
                 trigger: None,
             },
             pending: Vec::with_capacity(CHUNK_SAMPLES),
@@ -114,6 +122,8 @@ impl CaptureWriter {
             uncommitted: 0,
             compressor,
             stats: WriteStats::default(),
+            last_commit: Instant::now(),
+            last_flush: Instant::now(),
         })
     }
 
@@ -152,6 +162,64 @@ impl CaptureWriter {
                 self.write_chunk()?;
             }
         }
+        if !self.pending.is_empty() && self.last_flush.elapsed() >= LIVE_INTERVAL {
+            self.write_partial()?;
+        }
+        Ok(())
+    }
+
+    /// Compress the pending samples and summarize them.
+    fn encode(&mut self) -> Result<(&'static str, Vec<u8>, Vec<Entry>)> {
+        let t = Instant::now();
+        let packed = self
+            .compressor
+            .compress(&self.pending)
+            .map_err(|e| Error::Io(self.path.clone(), e))?;
+        let (codec, blob) = if packed.len() < self.pending.len() {
+            ("zstd", packed)
+        } else {
+            ("raw", self.pending.clone())
+        };
+        let l1 = summary::summarize_raw(&self.pending, LEVEL_FACTOR);
+        self.stats.compress_time += t.elapsed();
+        Ok((codec, blob, l1))
+    }
+
+    /// Store the current chunk row and its level-1 summary (replacing a
+    /// partial version of it).
+    fn put_chunk(&mut self, codec: &str, blob: &[u8], l1: &[Entry]) -> Result<()> {
+        let first = self.chunk_idx as u64 * CHUNK_SAMPLES as u64;
+        let n = self.pending.len();
+        self.conn
+            .prepare_cached(
+                "INSERT OR REPLACE INTO sample_chunk(capture_id, chunk_idx, first_sample, n_samples, codec, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?
+            .execute(params![self.id, self.chunk_idx, first as i64, n as i64, codec, blob])?;
+        self.conn
+            .prepare_cached(
+                "INSERT OR REPLACE INTO summary(capture_id, level, chunk_idx, data) VALUES (?1, 1, ?2, ?3)",
+            )?
+            .execute(params![self.id, self.chunk_idx, summary::to_blob(l1)])?;
+        self.last_flush = Instant::now();
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        self.conn.execute_batch("COMMIT; BEGIN")?;
+        self.uncommitted = 0;
+        self.last_commit = Instant::now();
+        Ok(())
+    }
+
+    /// Write the part-filled chunk so readers can see it (UI-8). The full
+    /// chunk replaces it later.
+    fn write_partial(&mut self) -> Result<()> {
+        let (codec, blob, l1) = self.encode()?;
+        let t = Instant::now();
+        self.put_chunk(codec, &blob, &l1)?;
+        self.commit()?;
+        self.stats.db_time += t.elapsed();
         Ok(())
     }
 
@@ -160,36 +228,12 @@ impl CaptureWriter {
             return Ok(());
         }
         let n = self.pending.len();
-        let first = self.chunk_idx as u64 * CHUNK_SAMPLES as u64;
+        let (codec, blob, l1) = self.encode()?;
         let t = Instant::now();
-        let packed = self
-            .compressor
-            .compress(&self.pending)
-            .map_err(|e| Error::Io(self.path.clone(), e))?;
-        let (codec, blob): (&str, &[u8]) = if packed.len() < n {
-            ("zstd", &packed)
-        } else {
-            ("raw", &self.pending)
-        };
-        let l1 = summary::summarize_raw(&self.pending, LEVEL_FACTOR);
-        self.stats.compress_time += t.elapsed();
-
-        let t = Instant::now();
-        self.conn
-            .prepare_cached(
-                "INSERT INTO sample_chunk(capture_id, chunk_idx, first_sample, n_samples, codec, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )?
-            .execute(params![self.id, self.chunk_idx, first as i64, n as i64, codec, blob])?;
-        self.conn
-            .prepare_cached(
-                "INSERT INTO summary(capture_id, level, chunk_idx, data) VALUES (?1, 1, ?2, ?3)",
-            )?
-            .execute(params![self.id, self.chunk_idx, summary::to_blob(&l1)])?;
+        self.put_chunk(codec, &blob, &l1)?;
         self.uncommitted += 1;
-        if self.uncommitted >= CHUNKS_PER_COMMIT {
-            self.conn.execute_batch("COMMIT; BEGIN")?;
-            self.uncommitted = 0;
+        if self.uncommitted >= CHUNKS_PER_COMMIT || self.last_commit.elapsed() >= LIVE_INTERVAL {
+            self.commit()?;
         }
         self.stats.db_time += t.elapsed();
 

@@ -60,6 +60,7 @@ impl CaptureFile {
                 num_samples: 0,
                 status: Status::Recording,
                 channel_names: Vec::new(),
+                channel_enabled: Vec::new(),
                 trigger: None,
             },
             chunks: Vec::new(),
@@ -89,16 +90,18 @@ impl CaptureFile {
                     num_samples: r.get::<_, i64>(5)? as u64,
                     status: Status::parse(&r.get::<_, String>(6)?),
                     channel_names: Vec::new(),
+                    channel_enabled: Vec::new(),
                     trigger: r.get(7)?,
                 })
             },
         )?;
         let mut stmt = self
             .conn
-            .prepare("SELECT name FROM channel WHERE capture_id = ?1 ORDER BY idx")?;
-        info.channel_names = stmt
-            .query_map([info.id], |r| r.get(0))?
+            .prepare("SELECT name, enabled FROM channel WHERE capture_id = ?1 ORDER BY idx")?;
+        let channels: Vec<(String, bool)> = stmt
+            .query_map([info.id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)))?
             .collect::<std::result::Result<_, _>>()?;
+        (info.channel_names, info.channel_enabled) = channels.into_iter().unzip();
         let mut stmt = self.conn.prepare(
             "SELECT first_sample, n_samples FROM sample_chunk WHERE capture_id = ?1 ORDER BY chunk_idx",
         )?;
@@ -165,6 +168,20 @@ impl CaptureFile {
         Ok(out)
     }
 
+    /// Write a self-contained copy of the capture to `dest` (`VACUUM INTO`),
+    /// including anything still in the WAL. `dest` must not exist.
+    pub fn save_copy(&self, dest: &Path) -> Result<()> {
+        if dest.exists() {
+            return Err(Error::Exists(dest.to_path_buf()));
+        }
+        let dest_str = dest.to_str().ok_or_else(|| Error::Format {
+            path: dest.to_path_buf(),
+            msg: "path is not valid Unicode".into(),
+        })?;
+        self.conn.execute("VACUUM INTO ?1", [dest_str])?;
+        Ok(())
+    }
+
     /// Visit every chunk in order with its first sample index.
     pub fn for_each_chunk(&self, mut f: impl FnMut(u64, &[u8]) -> Result<()>) -> Result<()> {
         for (idx, meta) in self.chunks.iter().enumerate() {
@@ -186,6 +203,22 @@ impl CaptureFile {
             let take = ((end - pos) as usize).min(chunk.len() - off);
             out.extend_from_slice(&chunk[off..off + take]);
             pos += take as u64;
+        }
+        Ok(out)
+    }
+
+    /// Level-1 summary entries of chunks `from_chunk..`, in sample order
+    /// (to extend a copy while recording, UI-8).
+    pub fn summary_l1_from(&self, from_chunk: usize) -> Result<Vec<Entry>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT data FROM summary WHERE capture_id = ?1 AND level = 1 AND chunk_idx >= ?2
+             ORDER BY chunk_idx",
+        )?;
+        let mut out = Vec::new();
+        let mut rows = stmt.query(params![self.info.id, from_chunk as i64])?;
+        while let Some(r) = rows.next()? {
+            let blob: Vec<u8> = r.get(0)?;
+            out.extend(summary::from_blob(&blob));
         }
         Ok(out)
     }
@@ -301,6 +334,77 @@ mod tests {
         w.finish(Status::Complete).unwrap();
         f.refresh().unwrap();
         assert_eq!(f.info.status, Status::Complete);
+    }
+
+    #[test]
+    fn ui8_partial_chunk_is_visible_while_recording() {
+        let path = temp("live.lvcap");
+        let cap = NewCapture {
+            device: "test".into(),
+            samplerate_hz: 20_000,
+            channel_names: (0..8).map(|i| format!("D{i}")).collect(),
+        };
+        let mut w = CaptureWriter::create(&path, &cap, true).unwrap();
+        let data = pattern(3000);
+        w.push(&data[..1000]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        w.push(&data[1000..2000]).unwrap(); // writes the part-filled chunk
+        let mut f = CaptureFile::open(&path).unwrap();
+        assert_eq!(f.info.num_samples, 2000);
+        assert_eq!(f.read_samples(0, 2000).unwrap(), data[..2000]);
+        assert_eq!(f.summary(1).unwrap().len(), 2000usize.div_ceil(64));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        w.push(&data[2000..]).unwrap();
+        f.refresh().unwrap();
+        assert_eq!(f.info.num_samples, 3000);
+        let (info, stats) = w.finish(Status::Complete).unwrap();
+        assert_eq!(info.num_samples, 3000);
+        assert_eq!(
+            stats.raw_bytes, 3000,
+            "partial writes are not counted twice"
+        );
+        f.refresh().unwrap();
+        assert_eq!(f.chunks().len(), 1);
+        assert_eq!(f.read_samples(0, 3000).unwrap(), data);
+        // The reader kept the WAL alive; once it closes, it can be folded in.
+        let wal = PathBuf::from(format!("{}-wal", path.display()));
+        assert!(wal.exists());
+        drop(f);
+        crate::fold_wal(&path).unwrap();
+        assert!(!wal.exists());
+        let g = CaptureFile::open(&path).unwrap();
+        assert_eq!(g.read_samples(0, 3000).unwrap(), data);
+    }
+
+    #[test]
+    fn ui6_save_copy_and_channels() {
+        let path = temp("copy-src.lvcap");
+        let cap = NewCapture {
+            device: "test".into(),
+            samplerate_hz: 1_000_000,
+            channel_names: (0..8).map(|i| format!("D{i}")).collect(),
+        };
+        let mut w = CaptureWriter::create(&path, &cap, true).unwrap();
+        let data = pattern(CHUNK_SAMPLES + 5);
+        w.push(&data).unwrap();
+        w.finish(Status::Complete).unwrap();
+
+        let f = CaptureFile::open(&path).unwrap();
+        let dest = temp("copy-dest.lvcap");
+        let _ = std::fs::remove_file(&dest);
+        f.save_copy(&dest).unwrap();
+        assert!(matches!(f.save_copy(&dest), Err(Error::Exists(_))));
+        drop(f);
+
+        let mut names: Vec<String> = (0..8).map(|i| format!("D{i}")).collect();
+        names[0] = "TX 송신".into();
+        let mut enabled = vec![true; 8];
+        enabled[5] = false;
+        crate::update_channels(&dest, &names, &enabled).unwrap();
+        let g = CaptureFile::open(&dest).unwrap();
+        assert_eq!(g.read_samples(0, data.len() as u64).unwrap(), data);
+        assert_eq!(g.info.channel_names, names);
+        assert_eq!(g.info.channel_enabled, enabled);
     }
 
     #[test]

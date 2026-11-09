@@ -472,6 +472,13 @@ fn info(path: &Path) -> Result<()> {
         i.duration_secs()
     );
     println!("채널      {}", i.channel_names.join(", "));
+    let hidden: Vec<String> = (0..i.channel_enabled.len())
+        .filter(|&c| !i.channel_enabled[c])
+        .map(|c| format!("D{c}"))
+        .collect();
+    if !hidden.is_empty() {
+        println!("숨긴 채널 {}", hidden.join(", "));
+    }
     if let Some(t) = &i.trigger {
         println!("트리거    {t}");
     }

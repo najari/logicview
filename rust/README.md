@@ -1,6 +1,6 @@
 # logicview Rust 버전
 
-[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M3 디코더** 단계다 (M0은 NFR-1만 남음, M1·M2 완료).
+[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M4 MCP** 단계다 (M0은 NFR-1만 남음, M1~M3 완료).
 기존 SLogicView 기반 빌드(저장소 루트)와 따로 빌드한다.
 
 ## 구성
@@ -11,6 +11,7 @@
 | `crates/lv-store` | `.lvcap`(SQLite) 쓰기·읽기, zstd 압축, 줌 요약(OR·AND 3단계), `.sr` 불러오기·내보내기, Saleae CSV·바이너리 내보내기 |
 | `crates/lv-capture` | 수집 세션: USB 스레드 → 유계 대기열 → 저장 스레드, 진행 상태, 소프트웨어 트리거 |
 | `crates/lv-decode` | libsigrokdecode를 실행 중에 읽어 들여 디코더 스택 실행 (Saleae HLA 포함) |
+| `crates/lv-mcp` | MCP 서버: Saleae Logic 2 MCP 도구 15개 + `read_analyzer_frames` + `query_frames`, HTTP·stdio |
 | `apps/lvcli` | 명령줄 도구: `devices`, `capture`, `bench`, `info`, `export`, `import`, `decoders`, `decode`, `synth`, `store-bench` |
 | `apps/logicview` | egui 앱: 장치에서 수집(실시간 파형), `.lvcap`·`.sr` 열기, `.lvcap`·`.sr`·CSV로 저장, 휠 줌, 끌기 이동, 커서 값, 마커 2개, 채널 이름·숨기기 |
 
@@ -205,6 +206,40 @@ lvcli decode cap.lvcap -P i2c:scl=SCL:sda=SDA,eeprom24xx --save --label EEPROM
 아직 하지 않은 것: 표에서 줄 클릭으로 이동(마우스 자동화가 안 되어 직접 확인 필요), 디코더 옵션 프리셋 저장,
 배포 zip에 디코더 런타임 넣기(M5).
 
+## M4 MCP (2026-11-10)
+
+Python 서버(`mcp/logicview_mcp.py`)와 같은 도구 이름·인자·결과·오류 문장을 쓰는 MCP 서버를 앱에 넣었다.
+수집은 lv-capture, 디코딩과 HLA는 lv-decode, 파일은 lv-store가 맡아 sigrok-cli를 부르지 않는다.
+
+```powershell
+logicview --mcp-stdio                       # 창 없이 stdio (AUT-5)
+logicview --mcp-http --port 10530           # 창 없이 HTTP (Logic 2와 같은 http://127.0.0.1:10530)
+#   --data-dir D (기본 %LOCALAPPDATA%\logicview\mcp), --sigrok-dir D, --hla-script extensions\hla.ps1
+claude mcp add --transport http logicview http://127.0.0.1:10530   # 앱에서 MCP를 켰을 때
+claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런타임 폴더>
+```
+
+- 앱 도구 막대의 **MCP**를 누르면 같은 서버가 앱 안에서 HTTP로 뜬다(AUT-3). 앱과 같은 장치를 쓰므로,
+  앱에서 수집하는 동안 MCP 수집은 "장치를 열 수 없음"으로 실패한다.
+- 캡처는 데이터 폴더의 `.lvcap`으로 다룬다. `load_capture`는 `.sr`과 `.lvcap`을 받는다(`.sr`은 복사해서 바꿈).
+  `save_capture`는 `.sr`(불러온 `.sr`이면 바이트 그대로 복사)과 `.lvcap`으로 쓴다.
+- 분석기 결과는 MCP 응답용으로 메모리에도 들고, 캡처 파일의 `analyzer`·`frame` 표에도 넣는다.
+- `query_frames`(AUT-4): 캡처 파일에 읽기 전용 SQL 한 문장을 돌린다.
+  - 쓰기 문장은 준비 단계에서 거부한다.
+  - 1,000행을 넘으면 `truncated`가 되고, 2초가 넘으면 중단한다.
+- HLA는 `add_high_level_analyzer`가 `extensions\hla.ps1`로 데이터 폴더의 `hla\decoders`에 설치한다. 이 폴더는
+  디코더 런타임이 시작될 때 `SIGROKDECODE_PATH`로 검색 경로에 들어가므로, 실행 중에 설치한 HLA도 불러온다.
+- stdio 모드는 stdin을 읽기 전에 디코더 런타임(내장 Python)을 먼저 시작한다. Windows에서는 한 스레드가 동기
+  파이프를 읽으며 막혀 있으면 같은 핸들을 쓰는 다른 호출도 막히는데, Python이 시작하면서 stdin을 살펴보기 때문이다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `mcp/tests/test_mcp.py --server rust\target\release\logicview.exe` | 34개 모두 통과 (`query_frames` 2개 포함) |
+| 같은 시험 `--hardware` (장치 `usb/2-3.3.1`) | 10개 더 통과: 1 MHz 0.25 s 수집이 250,000 샘플, 16 MHz 수동 중지 1 s 이상, 샘플레이트·펄스 트리거 오류 |
+| 같은 시험을 기존 Python 서버로 | 그대로 통과 (시험은 도구 16개 또는 `query_frames`까지 17개를 받음) |
+| `logicview --mcp-stdio`로 initialize → tools/list → load_capture → add_analyzer(CAN) → query_frames | 응답 정상, `can.bit` 140개 등 |
+| 앱에서 MCP 켜고 HTTP로 `get_devices` | `fx2lafw:usb/2-3.3.1` |
+
 ## PRD와 다르게 한 것
 
 - CAP-6: 전송이 STALL로 끝나면 halt를 풀고 **수집을 거기서 끝낸다** (다시 큐에 넣으면 그 사이 샘플이 빠진
@@ -218,6 +253,8 @@ lvcli decode cap.lvcap -P i2c:scl=SCL:sda=SDA,eeprom24xx --save --label EEPROM
 - DEC-3: HLA를 별도 Python 실행기로 돌리지 않고, 기존 브리지(`extensions/compat/saleae_bridge.py`)로 감싼 sigrok
   디코더로 libsigrokdecode 안에서 돌린다. 입력은 저장된 프레임이 아니라 아래 디코더의 Python 출력이다. sigrok-cli·
   SLogicView와 결과가 같고, 같은 HLA 설치를 함께 쓴다.
+- AUT-3: MCP 서버는 rmcp 대신 표준 라이브러리로 JSON-RPC와 HTTP·stdio를 직접 처리한다. Python 서버와 같은
+  동작(인자 형 변환, 오류 문장)을 맞추기 쉽고 의존이 적다. `deviceId`는 `fx2lafw:<위치>` (예: `fx2lafw:usb/1-8`).
 - 한글 글꼴: Noto Sans KR을 넣지 않았다. eframe 0.37이 시스템 글꼴 대체를 기본으로 하므로 맑은 고딕이
   없는 PC에서도 한글이 나온다.
 

@@ -5,6 +5,7 @@ members = [
     "crates/lv-store",
     "crates/lv-capture",
     "crates/lv-decode",
+    "crates/lv-mcp",
     "apps/lvcli",
     "apps/logicview",
 ]

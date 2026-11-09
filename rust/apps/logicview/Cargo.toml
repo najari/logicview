@@ -13,6 +13,7 @@ log = "0.4.35"
 lv-capture = { path = "../../crates/lv-capture" }
 lv-decode = { path = "../../crates/lv-decode" }
 lv-fx2lafw = { path = "../../crates/lv-fx2lafw" }
+lv-mcp = { path = "../../crates/lv-mcp" }
 lv-store = { path = "../../crates/lv-store" }
 rfd = "0.18.0"
 serde_json = "1.0.154"

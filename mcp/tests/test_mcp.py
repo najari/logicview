@@ -6,6 +6,8 @@ With --hardware it also captures from the connected analyzer.
 
 Usage: python -I test_mcp.py --sigrok-cli <app>\\sigrok-cli.exe [--hardware]
        <app>\\python.exe -I test_mcp.py --sigrok-cli <app>\\sigrok-cli.exe --server <app>\\mcp\\logicview_mcp.py
+       python -I test_mcp.py --sigrok-cli <app>\\sigrok-cli.exe --server rust\\target\\release\\logicview.exe
+         (the Rust app's built-in server: logicview --mcp-http; it also has query_frames)
 """
 import argparse
 import csv
@@ -77,8 +79,12 @@ def main():
     sock.bind(('127.0.0.1', 0))
     port = sock.getsockname()[1]
     sock.close()
-    server = subprocess.Popen([a.python, '-I', a.server, '--port', str(port),
-                               '--sigrok-cli', a.sigrok_cli, '--data-dir', os.path.join(work, 'data')],
+    if a.server.lower().endswith('.exe'):
+        cmd = [a.server, '--mcp-http']
+    else:
+        cmd = [a.python, '-I', a.server]
+    server = subprocess.Popen(cmd + ['--port', str(port), '--sigrok-cli', a.sigrok_cli,
+                                     '--data-dir', os.path.join(work, 'data')],
                               stderr=open(os.path.join(work, 'server.log'), 'w'))
     c = Client('http://127.0.0.1:{}'.format(port))
     for _ in range(50):
@@ -110,7 +116,9 @@ def run(c, work, sr, hardware):
               'close_capture', 'add_analyzer', 'remove_analyzer', 'add_high_level_analyzer',
               'remove_high_level_analyzer', 'export_raw_data_csv', 'export_raw_data_binary',
               'export_data_table_csv', 'legacy_export_analyzer']
-    check('tools/list has the Logic 2 tools', all(t in tools for t in logic2) and len(tools) == 16, tools)
+    extra = {'read_analyzer_frames', 'query_frames'}
+    check('tools/list has the Logic 2 tools', all(t in tools for t in logic2) and 'read_analyzer_frames' in tools
+          and len(tools) in (16, 17) and set(tools) - set(logic2) <= extra, tools)
     check('unknown tool', 'Unknown tool' in c.rpc('tools/call', {'name': 'nope'})['error']['message'])
 
     r, e = c.call('load_capture', filepath=sr)
@@ -175,6 +183,14 @@ def run(c, work, sr, hardware):
     check('sigrok decoder by id', got == ['H', 'i'], got)
     r, e = c.call('add_analyzer', captureId=cid, analyzerName='spiflash')
     check('stacked decoder refused', e and 'not a first-level decoder' in e, e)
+
+    if 'query_frames' in tools:
+        r, e = c.call('query_frames', captureId=cid, sql="SELECT text FROM frame f JOIN analyzer a ON a.id = "
+                      "f.analyzer_id WHERE a.kind = 'hla' AND f.type LIKE '%.rt-line' ORDER BY f.start_sample")
+        got = [row[0] for row in r['rows']] if r else e
+        check('query_frames (SQL on the capture file)', got == ['>Hi', '>ok!'], got)
+        r, e = c.call('query_frames', captureId=cid, sql='DELETE FROM frame')
+        check('query_frames is read-only', e and 'read-only' in e, e)
 
     # Exports
     table = os.path.join(work, 'out', 'table.csv')

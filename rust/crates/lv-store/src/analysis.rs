@@ -44,6 +44,25 @@ pub struct AnalyzerInfo {
     pub max_span: u64,
 }
 
+/// One value of a query result.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Cell {
+    Null,
+    Int(i64),
+    Real(f64),
+    Text(String),
+    /// Blobs are not returned, only their size.
+    Blob(usize),
+}
+
+#[derive(Debug, Clone)]
+pub struct QueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Cell>>,
+    /// More rows were available than `max_rows`.
+    pub truncated: bool,
+}
+
 fn open_rw(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -169,6 +188,84 @@ impl CaptureFile {
         Ok(v)
     }
 
+    /// Run one read-only SQL statement (AUT-4): at most `max_rows` rows,
+    /// interrupted after `timeout`. Statements that would write are refused.
+    pub fn query(
+        &self,
+        sql: &str,
+        max_rows: usize,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<QueryResult, String> {
+        let conn = self.conn();
+        let mut st = conn.prepare(sql).map_err(|e| format!("SQL error: {e}"))?;
+        if !st.readonly() {
+            return Err("only read-only statements (SELECT, WITH ... SELECT) are allowed".into());
+        }
+        let columns: Vec<String> = st.column_names().map(|c| c.to_string()).collect();
+        // A watchdog interrupts the statement when it runs too long.
+        let handle = conn.get_interrupt_handle();
+        let done = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let watchdog = {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let (lock, cv) = &*done;
+                let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                let (guard, res) = cv
+                    .wait_timeout_while(guard, timeout, |d| !*d)
+                    .unwrap_or_else(|e| e.into_inner());
+                if res.timed_out() && !*guard {
+                    handle.interrupt();
+                }
+            })
+        };
+        let result = (|| {
+            let mut rows = Vec::new();
+            let mut truncated = false;
+            let mut q = st.query([])?;
+            while let Some(r) = q.next()? {
+                if rows.len() == max_rows {
+                    truncated = true;
+                    break;
+                }
+                let mut row = Vec::with_capacity(columns.len());
+                for i in 0..columns.len() {
+                    use rusqlite::types::ValueRef;
+                    row.push(match r.get_ref(i)? {
+                        ValueRef::Null => Cell::Null,
+                        ValueRef::Integer(v) => Cell::Int(v),
+                        ValueRef::Real(v) => Cell::Real(v),
+                        ValueRef::Text(t) => Cell::Text(String::from_utf8_lossy(t).into_owned()),
+                        ValueRef::Blob(b) => Cell::Blob(b.len()),
+                    });
+                }
+                rows.push(row);
+            }
+            Ok::<_, rusqlite::Error>((rows, truncated))
+        })();
+        {
+            let (lock, cv) = &*done;
+            *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            cv.notify_all();
+        }
+        let _ = watchdog.join();
+        match result {
+            Ok((rows, truncated)) => Ok(QueryResult {
+                columns,
+                rows,
+                truncated,
+            }),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::OperationInterrupted =>
+            {
+                Err(format!(
+                    "query stopped after {:.1} s (time limit)",
+                    timeout.as_secs_f64()
+                ))
+            }
+            Err(e) => Err(format!("SQL error: {e}")),
+        }
+    }
+
     /// The annotation rows that hold at least one frame.
     pub fn frame_rows(&self, analyzer: i64) -> Result<Vec<i64>> {
         let mut st = self.conn().prepare_cached(
@@ -286,6 +383,34 @@ mod tests {
         assert_eq!(f.frame_rows(id).unwrap(), vec![0]);
         assert_eq!(f.frame_count(id, "프레임").unwrap(), 1);
         assert_eq!(f.frames_page(id, "", 1, 2).unwrap(), frames[1..3].to_vec());
+        // AUT-4: read-only SQL with row and time limits.
+        let q = f
+            .query(
+                "SELECT text, end_sample - start_sample AS len FROM frame WHERE analyzer_id = 1 ORDER BY start_sample",
+                3,
+                std::time::Duration::from_secs(2),
+            )
+            .unwrap();
+        assert_eq!(q.columns, ["text", "len"]);
+        assert_eq!(q.rows[0], [Cell::Text("H".into()), Cell::Int(10)]);
+        assert!(q.truncated);
+        assert!(
+            f.query("DELETE FROM frame", 10, std::time::Duration::from_secs(2))
+                .is_err()
+        );
+        assert!(
+            f.query("SELEC 1", 10, std::time::Duration::from_secs(2))
+                .unwrap_err()
+                .contains("SQL")
+        );
+        let slow = f
+            .query(
+                "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) FROM n",
+                10,
+                std::time::Duration::from_millis(200),
+            )
+            .unwrap_err();
+        assert!(slow.contains("time limit"), "{slow}");
         drop(f);
 
         delete_analyzer(&path, id).unwrap();

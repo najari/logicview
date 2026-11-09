@@ -105,6 +105,11 @@ pub struct App {
     table: TableUi,
     /// A frame picked in the data table.
     highlight: Option<(u64, u64)>,
+
+    // MCP server inside the app (AUT-3).
+    mcp_cfg: lv_mcp::Config,
+    mcp_addr: (String, u16),
+    mcp: Option<lv_mcp::HttpHandle>,
 }
 
 pub fn setup_fonts(ctx: &egui::Context) {
@@ -149,7 +154,9 @@ impl App {
         bench: bool,
         initial_view: Option<View>,
         preset: Preset,
+        mcp: (lv_mcp::Config, String, u16),
     ) -> Self {
+        let (mcp_cfg, mcp_host, mcp_port) = mcp;
         setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_theme(egui::Theme::Dark);
         let mut app = Self {
@@ -187,7 +194,12 @@ impl App {
             decode: DecodeUi::default(),
             table: TableUi::default(),
             highlight: None,
+            mcp_cfg,
+            mcp_addr: (mcp_host, mcp_port),
+            mcp: None,
         };
+        // MCP captures and the toolbar share one opened device.
+        app.mcp_cfg.device_slot = app.slot.clone();
         if let Some(r) = preset.rate.filter(|r| SAMPLERATES.contains(r)) {
             app.rate = r;
         }
@@ -613,6 +625,36 @@ impl App {
         self.clamp_view();
     }
 
+    /// Start or stop the MCP HTTP server (AUT-3).
+    fn mcp_toggle(&mut self, ui: &mut egui::Ui) {
+        let mut on = self.mcp.is_some();
+        let (host, port) = self.mcp_addr.clone();
+        let url = format!("http://{host}:{port}");
+        let r = ui.toggle_value(&mut on, "MCP").on_hover_text(format!(
+            "MCP 서버 (Saleae Logic 2 도구). Claude Code 등록:\nclaude mcp add --transport http logicview {url}"
+        ));
+        if !r.changed() {
+            return;
+        }
+        if on {
+            let started = lv_mcp::Server::new(self.mcp_cfg.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|s| {
+                    lv_mcp::start_http(Arc::new(s), &host, port).map_err(|e| e.to_string())
+                });
+            match started {
+                Ok(h) => {
+                    self.message = Some(format!("MCP 서버: http://{}", h.addr));
+                    self.mcp = Some(h);
+                }
+                Err(e) => self.message = Some(format!("MCP 서버를 열 수 없습니다 ({url}): {e}")),
+            }
+        } else if let Some(h) = self.mcp.take() {
+            h.stop();
+            self.message = Some("MCP 서버를 껐습니다".into());
+        }
+    }
+
     // ---- toolbars ----------------------------------------------------------
 
     fn capture_bar(&mut self, ui: &mut egui::Ui) {
@@ -737,6 +779,7 @@ impl App {
             ui.add_enabled_ui(self.capture.is_some(), |ui| {
                 ui.toggle_value(&mut self.table.show, "표");
             });
+            self.mcp_toggle(ui);
             ui.separator();
             if let Some(cv) = &self.capture {
                 let i = cv.info();

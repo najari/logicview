@@ -255,6 +255,20 @@ unsafe extern "C" fn log_cb(
     0
 }
 
+static EXTRA_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Search `dir` for decoders too (e.g. where HLAs get installed). Takes
+/// effect when the runtime starts, so call it before [`runtime`]; decoders
+/// installed there later are still found when first used.
+pub fn add_decoder_dir(dir: &Path) {
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(mut v) = EXTRA_DIRS.lock()
+        && !v.iter().any(|d| d == dir)
+    {
+        v.push(dir.to_path_buf());
+    }
+}
+
 fn has_runtime(dir: &Path) -> bool {
     dir.join("libsigrokdecode-4.dll").is_file()
         && dir.join("share/libsigrokdecode/decoders").is_dir()
@@ -309,6 +323,17 @@ fn start_runtime() -> std::result::Result<Runtime, String> {
         // SAFETY: done once, before Python starts; Windows keeps the
         // environment behind a lock, so concurrent readers are safe.
         unsafe { std::env::set_var("PYTHONHOME", &dir) };
+    }
+    let extra = EXTRA_DIRS.lock().map(|v| v.clone()).unwrap_or_default();
+    if !extra.is_empty() {
+        let mut paths: Vec<PathBuf> = std::env::var_os("SIGROKDECODE_PATH")
+            .map(|p| std::env::split_paths(&p).collect())
+            .unwrap_or_default();
+        paths.extend(extra);
+        if let Ok(joined) = std::env::join_paths(paths) {
+            // SAFETY: as for PYTHONHOME below.
+            unsafe { std::env::set_var("SIGROKDECODE_PATH", joined) };
+        }
     }
     // Python loads extension modules (e.g. _ctypes -> libffi) with the
     // default DLL search dirs, which hold the executable's folder, not this

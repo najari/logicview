@@ -1,7 +1,12 @@
-//! logicview (M2): capture from an fx2lafw analyzer, open `.lvcap`/`.sr`, browse the waveform.
+//! logicview: capture from an fx2lafw analyzer, open `.lvcap`/`.sr`, browse
+//! the waveform, decode, and serve MCP.
 //!
 //! ```text
 //! logicview [file.lvcap]          open a capture
+//! logicview --mcp-stdio           MCP server on stdin/stdout, no window (AUT-5)
+//! logicview --mcp-http [--host H] [--port 10530]
+//!                                 MCP server over HTTP, no window
+//!   [--data-dir D] [--sigrok-dir D | --sigrok-cli D\sigrok-cli.exe] [--hla-script P]
 //! logicview --bench file.lvcap    scripted zoom/pan, print frame times, exit
 //! logicview --view 1000,0.5 f     start at sample 1000, 0.5 samples per point
 //! logicview --rate 1M --samples manual --trigger 0=f
@@ -25,11 +30,40 @@ fn main() -> eframe::Result {
     let mut bench = false;
     let mut view = None;
     let mut preset = app::Preset::default();
+    let mut mcp: Option<&'static str> = None;
+    let mut host = "127.0.0.1".to_string();
+    let mut port = 10530u16;
+    let mut data_dir = None;
+    let mut hla_script = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
         let mut value = || args.next().map(|v| v.to_string_lossy().to_string());
         if a == "--bench" {
             bench = true;
+        } else if a == "--mcp-stdio" {
+            mcp = Some("stdio");
+        } else if a == "--mcp-http" {
+            mcp = Some("http");
+        } else if a == "--host" {
+            host = value().unwrap_or(host);
+        } else if a == "--port" {
+            port = value().and_then(|v| v.parse().ok()).unwrap_or(port);
+        } else if a == "--data-dir" {
+            data_dir = value().map(PathBuf::from);
+        } else if a == "--hla-script" {
+            hla_script = value().map(PathBuf::from);
+        } else if a == "--sigrok-dir" || a == "--sigrok-cli" {
+            // The decoder runtime folder (sigrok-cli.exe sits in it).
+            if let Some(v) = value() {
+                let p = PathBuf::from(v);
+                let dir = if p.is_file() {
+                    p.parent().map(PathBuf::from).unwrap_or(p)
+                } else {
+                    p
+                };
+                // SAFETY: single-threaded here, before anything reads it.
+                unsafe { std::env::set_var("LOGICVIEW_SIGROK_DIR", dir) };
+            }
         } else if a == "--rate" {
             preset.rate = value().and_then(|v| lv_store::sigrok::parse_rate(&v));
         } else if a == "--samples" {
@@ -61,6 +95,16 @@ fn main() -> eframe::Result {
             path = Some(PathBuf::from(a));
         }
     }
+    let mut mcp_cfg = lv_mcp::Config::new(data_dir.unwrap_or_else(lv_mcp::default_data_dir));
+    if hla_script.is_some() {
+        mcp_cfg.hla_script = hla_script;
+    }
+    // HLAs installed through MCP must be on the decoder search path before
+    // the decoder runtime starts.
+    lv_mcp::prepare(&mcp_cfg);
+    if let Some(mode) = mcp {
+        return run_mcp(mode, mcp_cfg, &host, port);
+    }
     if bench {
         attach_console();
     }
@@ -74,8 +118,41 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "logicview",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, path, bench, view, preset)))),
+        Box::new(move |cc| {
+            Ok(Box::new(app::App::new(
+                cc,
+                path,
+                bench,
+                view,
+                preset,
+                (mcp_cfg, host, port),
+            )))
+        }),
     )
+}
+
+/// Headless MCP server.
+fn run_mcp(mode: &str, cfg: lv_mcp::Config, host: &str, port: u16) -> eframe::Result {
+    let server = match lv_mcp::Server::new(cfg) {
+        Ok(s) => std::sync::Arc::new(s),
+        Err(e) => {
+            log::error!("MCP data folder: {e}");
+            std::process::exit(1);
+        }
+    };
+    if mode == "stdio" {
+        lv_mcp::serve_stdio(server);
+        return Ok(());
+    }
+    match lv_mcp::start_http(server, host, port) {
+        Ok(_handle) => loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        },
+        Err(e) => {
+            log::error!("MCP HTTP server on {host}:{port}: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// The release build has no console; `--bench` prints, so borrow the

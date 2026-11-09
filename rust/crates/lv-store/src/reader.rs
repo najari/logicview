@@ -24,6 +24,9 @@ pub struct CaptureFile {
 impl CaptureFile {
     /// Open read-only. Works while the file is still being recorded.
     pub fn open(path: &Path) -> Result<Self> {
+        if let Err(e) = std::fs::metadata(path) {
+            return Err(Error::Io(path.to_path_buf(), e));
+        }
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -57,6 +60,7 @@ impl CaptureFile {
                 num_samples: 0,
                 status: Status::Recording,
                 channel_names: Vec::new(),
+                trigger: None,
             },
             chunks: Vec::new(),
         };
@@ -71,7 +75,8 @@ impl CaptureFile {
     /// Re-read the capture row and chunk list (for a file still recording).
     pub fn refresh(&mut self) -> Result<()> {
         let mut info = self.conn.query_row(
-            "SELECT id, created_at, device, samplerate_hz, num_channels, num_samples, status
+            "SELECT id, created_at, device, samplerate_hz, num_channels, num_samples, status,
+                    trigger_json
              FROM capture ORDER BY id LIMIT 1",
             [],
             |r| {
@@ -84,6 +89,7 @@ impl CaptureFile {
                     num_samples: r.get::<_, i64>(5)? as u64,
                     status: Status::parse(&r.get::<_, String>(6)?),
                     channel_names: Vec::new(),
+                    trigger: r.get(7)?,
                 })
             },
         )?;
@@ -157,6 +163,15 @@ impl CaptureFile {
             )));
         }
         Ok(out)
+    }
+
+    /// Visit every chunk in order with its first sample index.
+    pub fn for_each_chunk(&self, mut f: impl FnMut(u64, &[u8]) -> Result<()>) -> Result<()> {
+        for (idx, meta) in self.chunks.iter().enumerate() {
+            let data = self.read_chunk(idx)?;
+            f(meta.first_sample, &data)?;
+        }
+        Ok(())
     }
 
     /// Samples `[start, start + len)`, clipped to the capture.

@@ -1,13 +1,15 @@
 //! `.lvcap` capture files: one SQLite database per capture (STO-1..3, STO-7).
 
+pub mod export;
 mod reader;
 mod schema;
+pub mod sigrok;
 pub mod summary;
 mod writer;
 
 use std::path::PathBuf;
 
-pub use reader::CaptureFile;
+pub use reader::{CaptureFile, ChunkMeta};
 pub use schema::{FORMAT, VERSION, now_rfc3339};
 pub use writer::{CaptureWriter, WriteStats};
 
@@ -59,6 +61,8 @@ pub struct CaptureInfo {
     pub num_samples: u64,
     pub status: Status,
     pub channel_names: Vec<String>,
+    /// `capture.trigger_json`: the trigger and where it fired (CAP-8).
+    pub trigger: Option<String>,
 }
 
 impl CaptureInfo {
@@ -83,6 +87,8 @@ pub enum Error {
     NewerVersion { path: PathBuf, version: i64 },
     #[error("capture file is damaged: {0}")]
     Corrupt(String),
+    #[error("{path}: {msg}")]
+    Format { path: PathBuf, msg: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

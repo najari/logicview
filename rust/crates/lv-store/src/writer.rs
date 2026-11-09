@@ -105,6 +105,7 @@ impl CaptureWriter {
                 num_samples: 0,
                 status: Status::Recording,
                 channel_names: cap.channel_names.clone(),
+                trigger: None,
             },
             pending: Vec::with_capacity(CHUNK_SAMPLES),
             chunk_idx: 0,
@@ -127,6 +128,16 @@ impl CaptureWriter {
 
     pub fn stats(&self) -> &WriteStats {
         &self.stats
+    }
+
+    /// Record the trigger and where it fired (`capture.trigger_json`).
+    pub fn set_trigger(&mut self, json: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE capture SET trigger_json = ?1 WHERE id = ?2",
+            params![json, self.id],
+        )?;
+        self.info.trigger = Some(json.to_string());
+        Ok(())
     }
 
     /// Append samples (one byte each).

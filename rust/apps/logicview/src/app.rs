@@ -99,6 +99,25 @@ impl App {
     }
 
     fn open(&mut self, path: &Path) {
+        let is_sr = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("sr"));
+        if is_sr {
+            // sigrok session (STO-5): convert to a .lvcap in the temp folder.
+            let dir = std::env::temp_dir().join("logicview");
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let out = dir.join(format!("{stem}.lvcap"));
+            let converted = std::fs::create_dir_all(&dir)
+                .map_err(|e| lv_store::Error::Io(dir.clone(), e))
+                .and_then(|_| lv_store::sigrok::import(path, &out, true));
+            match converted {
+                Ok(_) => return self.open(&out),
+                Err(e) => {
+                    self.error = Some(format!("{}을(를) 불러올 수 없습니다: {e}", path.display()));
+                    return;
+                }
+            }
+        }
         match CaptureView::open(path) {
             Ok(cv) => {
                 self.capture = Some(cv);
@@ -151,7 +170,9 @@ impl App {
         ui.horizontal(|ui| {
             if ui.button("열기…").clicked()
                 && let Some(p) = rfd::FileDialog::new()
+                    .add_filter("캡처 파일", &["lvcap", "sr"])
                     .add_filter("logicview 캡처", &["lvcap"])
+                    .add_filter("sigrok 세션", &["sr"])
                     .pick_file()
             {
                 self.open(&p);
@@ -181,7 +202,7 @@ impl App {
                     i.device
                 ));
             } else {
-                ui.label("캡처 파일(.lvcap)을 열거나 창에 끌어다 놓으세요");
+                ui.label("캡처 파일(.lvcap, .sr)을 열거나 창에 끌어다 놓으세요");
             }
         });
     }

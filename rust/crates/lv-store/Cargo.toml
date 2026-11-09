@@ -10,3 +10,4 @@ log = "0.4.35"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 thiserror = "2.0.21"
 zstd = "0.14.3"
+zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }

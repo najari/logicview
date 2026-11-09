@@ -73,6 +73,10 @@ impl CaptureFile {
         &self.path
     }
 
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Re-read the capture row and chunk list (for a file still recording).
     pub fn refresh(&mut self) -> Result<()> {
         let mut info = self.conn.query_row(

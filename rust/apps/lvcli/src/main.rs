@@ -1,5 +1,6 @@
 //! `lvcli`: logicview from the command line (AUT-1, AUT-2).
 
+mod decode;
 mod synth;
 mod units;
 
@@ -85,6 +86,31 @@ enum Cmd {
         /// 내보낼 채널, 쉼표로 구분 (예: 0,1). 없으면 모든 채널 (sr은 항상 모두)
         #[arg(short, long, value_delimiter = ',')]
         channels: Vec<usize>,
+    },
+    /// 설치된 프로토콜 디코더 목록, 또는 디코더 하나의 채널·옵션·주석 (DEC-1)
+    Decoders {
+        /// 디코더 ID (예: uart). 없으면 목록
+        id: Option<String>,
+    },
+    /// 디코더 스택을 돌려 주석을 sigrok-cli와 같은 형식으로 출력 (DEC-1, DEC-2)
+    Decode {
+        /// .lvcap 또는 .sr
+        file: PathBuf,
+        /// 디코더 스택 (sigrok-cli -P 형식, 예: uart:rx=D0:baudrate=115200,midi)
+        #[arg(short = 'P', long)]
+        protocol: String,
+        /// 보일 주석 (sigrok-cli -A 형식, 예: uart=rx-data:tx-data). 없으면 맨 위 디코더의 전부
+        #[arg(short = 'A', long)]
+        annotations: Option<String>,
+        /// 결과를 .lvcap 파일의 analyzer·frame 표에 저장
+        #[arg(long)]
+        save: bool,
+        /// 저장할 때 분석기 이름 (기본: 맨 위 디코더 이름)
+        #[arg(long)]
+        label: Option<String>,
+        /// 주석을 출력하지 않음 (개수와 시간만)
+        #[arg(short, long)]
+        quiet: bool,
     },
     /// sigrok .sr 파일을 .lvcap으로 불러오기 (STO-5)
     Import {
@@ -196,6 +222,15 @@ fn run(cli: Cli) -> Result<()> {
             output,
             overwrite,
         } => import(&file, output, overwrite),
+        Cmd::Decoders { id } => decode::decoders(id.as_deref()),
+        Cmd::Decode {
+            file,
+            protocol,
+            annotations,
+            save,
+            label,
+            quiet,
+        } => decode::run(&file, &protocol, annotations.as_deref(), save, label, quiet),
         Cmd::StoreBench { samples, output } => synth::store_bench(parse_si(&samples)?, &output),
         Cmd::Synth {
             samples,
@@ -481,6 +516,16 @@ fn info(path: &Path) -> Result<()> {
     }
     if let Some(t) = &i.trigger {
         println!("트리거    {t}");
+    }
+    for a in f.analyzers()? {
+        println!(
+            "분석기 {}  {} ({}: {}), 프레임 {}",
+            a.id,
+            a.label,
+            a.kind,
+            a.decoder_id,
+            fmt_samples(a.frames)
+        );
     }
     println!(
         "덩어리    {}개, 샘플 저장 {} (압축 {:.1}배), 파일 {}",

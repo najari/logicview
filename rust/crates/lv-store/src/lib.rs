@@ -1,5 +1,6 @@
 //! `.lvcap` capture files: one SQLite database per capture (STO-1..3, STO-7).
 
+pub mod analysis;
 pub mod export;
 mod reader;
 mod schema;

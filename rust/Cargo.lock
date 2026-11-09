@@ -2045,9 +2045,11 @@ dependencies = [
  "env_logger",
  "log",
  "lv-capture",
+ "lv-decode",
  "lv-fx2lafw",
  "lv-store",
  "rfd",
+ "serde_json",
 ]
 
 [[package]]

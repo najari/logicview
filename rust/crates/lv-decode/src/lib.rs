@@ -156,6 +156,16 @@ pub fn parse_stack(spec: &str) -> Result<Vec<StackEntry>> {
     Ok(out)
 }
 
+/// `analyzer.kind` for a stack: `hla` when it runs a Saleae HLA (installed
+/// by `extensions/hla.ps1` as an `hla_*` decoder, DEC-3), else `sigrok`.
+pub fn analyzer_kind(stack: &[StackEntry]) -> &'static str {
+    if stack.iter().any(|e| e.id.starts_with("hla_")) {
+        "hla"
+    } else {
+        "sigrok"
+    }
+}
+
 /// Back to the `sigrok-cli -P` form.
 pub fn stack_text(stack: &[StackEntry]) -> String {
     stack

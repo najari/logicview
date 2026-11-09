@@ -199,7 +199,7 @@ pub fn run(
         let id = lv_store::analysis::add_analyzer(
             &path,
             &lv_store::analysis::NewAnalyzer {
-                kind: "sigrok".into(),
+                kind: lv_decode::analyzer_kind(&stack).into(),
                 decoder_id: settings.stack.clone(),
                 label: label.clone(),
                 settings_json: settings.to_json(),

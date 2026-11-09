@@ -1,6 +1,6 @@
 # logicview Rust 버전
 
-[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M2 파형 화면** 단계다 (M0은 NFR-1만 남음, M1 완료).
+[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M3 디코더** 단계다 (M0은 NFR-1만 남음, M1·M2 완료).
 기존 SLogicView 기반 빌드(저장소 루트)와 따로 빌드한다.
 
 ## 구성
@@ -10,7 +10,8 @@
 | `crates/lv-fx2lafw` | fx2lafw USB 드라이버 (nusb): 장치 찾기, 펌웨어 업로드, 시작 명령, bulk 스트리밍 |
 | `crates/lv-store` | `.lvcap`(SQLite) 쓰기·읽기, zstd 압축, 줌 요약(OR·AND 3단계), `.sr` 불러오기·내보내기, Saleae CSV·바이너리 내보내기 |
 | `crates/lv-capture` | 수집 세션: USB 스레드 → 유계 대기열 → 저장 스레드, 진행 상태, 소프트웨어 트리거 |
-| `apps/lvcli` | 명령줄 도구: `devices`, `capture`, `bench`, `info`, `export`, `import`, `synth`, `store-bench` |
+| `crates/lv-decode` | libsigrokdecode를 실행 중에 읽어 들여 디코더 스택 실행 (Saleae HLA 포함) |
+| `apps/lvcli` | 명령줄 도구: `devices`, `capture`, `bench`, `info`, `export`, `import`, `decoders`, `decode`, `synth`, `store-bench` |
 | `apps/logicview` | egui 앱: 장치에서 수집(실시간 파형), `.lvcap`·`.sr` 열기, `.lvcap`·`.sr`·CSV로 저장, 휠 줌, 끌기 이동, 커서 값, 마커 2개, 채널 이름·숨기기 |
 
 ## 빌드
@@ -156,6 +157,54 @@ PC: Intel USB 3.1 호스트 컨트롤러, 애널라이저는 루트 허브 2번 
 (winit이 보낸 창 메시지를 받지 않아 `--markers`로 대신 시험), 저장 대화상자에서 `.sr`·CSV 고르기(저장 함수는
 단위 테스트·`lvcli`로 시험), UI-10(마지막 설정 기억, P2).
 
+## M3 디코더 (2026-11-10)
+
+디코더 런타임은 기존 앱 폴더(`SLogicView-2.3.3-fx2lafw`)의 libsigrokdecode·glib·Python·디코더 스크립트를 그대로 쓴다.
+실행 중에 DLL을 읽어 들이므로(import 라이브러리 없음) 빌드에는 필요 없다. 찾는 순서: `LOGICVIEW_SIGROK_DIR`,
+실행 파일 옆 `sigrok\`, 실행 파일 폴더. 런타임이 없으면 디코더 기능만 꺼지고 나머지는 동작한다.
+
+```powershell
+$env:LOGICVIEW_SIGROK_DIR = 'C:\...\SLogicView-2.3.3-fx2lafw'
+lvcli decoders                       # 131개 (sigrok-cli -L과 같은 수)
+lvcli decoders uart                  # 채널, 옵션(기본값·고를 값), 주석 클래스·행
+lvcli decode cap.lvcap -P uart:rx=D0:baudrate=9600 -A uart=rx-data
+lvcli decode cap.lvcap -P i2c:scl=SCL:sda=SDA,eeprom24xx --save --label EEPROM
+```
+
+- `-P`·`-A`는 sigrok-cli와 같은 문법이다. 채널은 `0`~`7`, `D0`~`D7`, 캡처의 채널 이름 중 무엇으로든 적을 수 있다.
+  출력은 `sigrok-cli --protocol-decoder-samplenum --protocol-decoder-ann-class`와 같다.
+- `--save`는 결과를 `.lvcap`의 `analyzer`·`frame` 표에 넣는다.
+  - `frame.type`은 `<디코더>.<클래스>`이고, `ann_row`는 스택 전체에서 센 주석 행 번호다.
+  - 행 이름은 `analyzer.settings_json`의 `rows`에 들어 있다.
+- Saleae HLA(DEC-3)는 `extensions\hla.ps1 install`로 sigrok 디코더(`hla_<확장>_<프로토콜>`)로 설치한다.
+  - 설치 폴더는 `%LOCALAPPDATA%\libsigrokdecode\decoders`이고, 다른 폴더는 `SIGROKDECODE_DIR`로 알려 준다.
+  - 설치한 HLA는 프로토콜 디코더 위에 쌓아 쓴다(예: `uart:rx=D0,hla_line_reader_uart`).
+  - HLA가 든 분석기는 `kind = 'hla'`로 저장된다.
+
+앱:
+
+- **디코더…** 창에서 디코더를 고른다. 찾기 칸에 입력하면 목록이 걸러진다.
+  - 채널과 옵션을 정한다. 채널은 이름이 맞으면 저절로 고른다. 옵션은 고를 값이 있으면 목록으로 나온다.
+  - "위에 쌓을 디코더"에는 출력이 맞는 디코더만 나온다.
+  - **디코딩**을 누르면 백그라운드에서 돈다(DEC-4). 진행률을 보여 주고 취소할 수 있다.
+  - 수집 중에는 디코딩할 수 없다.
+- 결과는 파일에 저장되고 파형 아래에 주석 행으로 그려진다(UI-9).
+  - 프레임이 있는 행만 그린다. 한 화면에 5,000개가 넘으면 확대하라고 알린다.
+  - 표에서 분석기마다 "파형에 보이기"를 끌 수 있다.
+- **표**: 분석기별 프레임 목록이다(가상 스크롤, 텍스트·종류 검색, 삭제). 줄을 클릭하면 그 프레임으로 가서 강조한다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `make-capture.py` 신호(10 MHz, 46,000 샘플)를 7가지 스택(uart, uart ascii, i2c, spi, can, spi+spiflash, i2c+eeprom24xx)으로 `lvcli decode` | 7가지 모두 sigrok-cli 출력과 줄 순서까지 같음 (77·77·55·56·174·59·73줄) |
+| 시험 HLA 4개(line-reader, i2c-transactions, spi-burst, can-messages)를 프로토콜 디코더 위에 쌓아 디코딩 | 4가지 모두 sigrok-cli와 같음 ("Hi", "ok!", "W 0x50: 10 20", "R 0x50: ab", SPI burst, CAN 0x123·0x1ABCDEF) |
+| 합성 5 M 샘플 24 MHz, `uart:rx=UART TX -A uart=rx-data` | sigrok-cli와 같은 85줄, 0.16 s (sigrok-cli 0.15 s) |
+| 합성 50 M 샘플 | uart 주석 9,196개 0.63 s, pwm 주석 62,496개 0.37 s |
+| 앱: `test.sr` 열기 → D0 이름 RX → 디코더… → uart → 디코딩 (UI Automation) | RX가 D0에 저절로 배정, 77 프레임 저장, 주석 행 2개와 표 표시, 검색 "rx-data" 63 프레임 |
+| `cargo test` | 런타임이 있으면 libsigrokdecode로 UART 디코딩과 오류 문장까지 시험, 없으면 건너뜀 |
+
+아직 하지 않은 것: 표에서 줄 클릭으로 이동(마우스 자동화가 안 되어 직접 확인 필요), 디코더 옵션 프리셋 저장,
+배포 zip에 디코더 런타임 넣기(M5).
+
 ## PRD와 다르게 한 것
 
 - CAP-6: 전송이 STALL로 끝나면 halt를 풀고 **수집을 거기서 끝낸다** (다시 큐에 넣으면 그 사이 샘플이 빠진
@@ -166,6 +215,9 @@ PC: Intel USB 3.1 호스트 컨트롤러, 애널라이저는 루트 허브 2번 
   트리거가 걸리기 전에 멈추면 아무것도 저장하지 않는다.
 - STO-6 외에 `raw` 내보내기(샘플마다 1바이트, `sigrok-cli -O binary`와 같은 형식)를 더했다. sigrok 결과와
   바이트 단위로 비교하는 시험에 쓴다.
+- DEC-3: HLA를 별도 Python 실행기로 돌리지 않고, 기존 브리지(`extensions/compat/saleae_bridge.py`)로 감싼 sigrok
+  디코더로 libsigrokdecode 안에서 돌린다. 입력은 저장된 프레임이 아니라 아래 디코더의 Python 출력이다. sigrok-cli·
+  SLogicView와 결과가 같고, 같은 HLA 설치를 함께 쓴다.
 - 한글 글꼴: Noto Sans KR을 넣지 않았다. eframe 0.37이 시스템 글꼴 대체를 기본으로 하므로 맑은 고딕이
   없는 PC에서도 한글이 나온다.
 

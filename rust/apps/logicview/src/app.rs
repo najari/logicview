@@ -15,6 +15,7 @@ use lv_fx2lafw::{FoundDevice, SAMPLERATES};
 use crate::acquire::{self, DeviceSlot, Msg, Session};
 use crate::bench::Bench;
 use crate::capture_view::CaptureView;
+use crate::decode_ui::{self, Analyzer, DecodeUi, TableAction, TableUi};
 use crate::wave::{self, Row, View, WaveStats};
 
 /// Channel colours in resistor colour-code order, as sigrok tools use.
@@ -97,6 +98,13 @@ pub struct App {
     show_channels: bool,
     names: Vec<String>,
     shown: Vec<bool>,
+
+    // Decoders (M3).
+    analyzers: Vec<Analyzer>,
+    decode: DecodeUi,
+    table: TableUi,
+    /// A frame picked in the data table.
+    highlight: Option<(u64, u64)>,
 }
 
 pub fn setup_fonts(ctx: &egui::Context) {
@@ -175,6 +183,10 @@ impl App {
             show_channels: false,
             names: default_names(),
             shown: vec![true; 8],
+            analyzers: Vec::new(),
+            decode: DecodeUi::default(),
+            table: TableUi::default(),
+            highlight: None,
         };
         if let Some(r) = preset.rate.filter(|r| SAMPLERATES.contains(r)) {
             app.rate = r;
@@ -245,9 +257,32 @@ impl App {
         for (i, &e) in info.channel_enabled.iter().take(8).enumerate() {
             self.shown[i] = e;
         }
+        self.analyzers = decode_ui::load_analyzers(cv.file());
         self.capture = Some(cv);
         self.markers = [None; 2];
+        self.highlight = None;
         self.fit_pending = true;
+    }
+
+    fn reload_analyzers(&mut self) {
+        if let Some(cv) = &self.capture {
+            self.analyzers = decode_ui::load_analyzers(cv.file());
+        }
+    }
+
+    /// Show samples `[s, e]` (a frame picked in the table).
+    fn jump_to(&mut self, s: u64, e: u64) {
+        let len = (e.saturating_sub(s)).max(1) as f64;
+        let w = self.plot_width.max(1.0) as f64;
+        let px = len / self.view.spp;
+        if px > w * 0.8 || px < 4.0 {
+            self.view.spp = (len * 3.0 / w).max(MIN_SPP);
+        }
+        let mid = (s + e) as f64 / 2.0;
+        self.view.start = mid - w / 2.0 * self.view.spp;
+        self.follow = false;
+        self.clamp_view();
+        self.highlight = Some((s, e));
     }
 
     fn save_dialog(&mut self) {
@@ -698,6 +733,10 @@ impl App {
             }
             ui.separator();
             ui.toggle_value(&mut self.show_channels, "채널…");
+            ui.toggle_value(&mut self.decode.open, "디코더…");
+            ui.add_enabled_ui(self.capture.is_some(), |ui| {
+                ui.toggle_value(&mut self.table.show, "표");
+            });
             ui.separator();
             if let Some(cv) = &self.capture {
                 let i = cv.info();
@@ -752,6 +791,10 @@ impl App {
                     format!("요약 {}단계", s.level)
                 },
             ));
+            if let Some(t) = self.decode.progress_text() {
+                ui.separator();
+                ui.label(t);
+            }
             if let Some(c) = &self.cursor_text {
                 ui.separator();
                 ui.label(c);
@@ -860,7 +903,8 @@ impl App {
         let rate = info.samplerate_hz.max(1) as f64;
         let nch = info.num_channels.clamp(1, 8);
         let chans: Vec<usize> = (0..nch).filter(|&c| self.shown[c]).collect();
-        let row_h = (plot.height() / chans.len().max(1) as f32).clamp(24.0, 96.0);
+        let ann_h: f32 = self.analyzers.iter().map(Analyzer::height).sum();
+        let row_h = ((plot.height() - ann_h) / chans.len().max(1) as f32).clamp(24.0, 96.0);
         let view = self.view;
         let x_of = |s: f64| plot.left() + ((s - view.start) / view.spp) as f32;
 
@@ -935,6 +979,37 @@ impl App {
             Err(e) => self.error = Some(format!("데이터를 읽지 못했습니다: {e}")),
         }
         let build_ms = t_build.elapsed().as_secs_f64() * 1e3;
+
+        // Annotation rows (UI-9) under the channels.
+        let mut y = plot.top() + chans.len() as f32 * row_h;
+        for an in self.analyzers.iter_mut() {
+            match an.paint(
+                &painter,
+                cv.file(),
+                plot,
+                full.left() + 22.0,
+                y,
+                view,
+                text,
+                grid,
+            ) {
+                Ok(h) => y += h,
+                Err(e) => log::warn!("drawing {}: {e}", an.info.label),
+            }
+        }
+        if let Some((s, e)) = self.highlight {
+            let (x0, x1) = (
+                x_of(s as f64).max(plot.left()),
+                x_of(e as f64).min(plot.right()),
+            );
+            if x1 >= x0 {
+                painter.rect_filled(
+                    Rect::from_min_max(pos2(x0 - 1.0, plot.top()), pos2(x1 + 1.0, plot.bottom())),
+                    CornerRadius::ZERO,
+                    Color32::from_rgba_unmultiplied(0x4c, 0x9f, 0xd8, 28),
+                );
+            }
+        }
 
         // Markers (UI-5): click sets A, then B, then moves the nearer one;
         // right click clears. A click near an edge snaps to it.
@@ -1139,10 +1214,58 @@ impl eframe::App for App {
             self.file_bar(ui);
         });
         egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
+        if let Some(ev) = self.decode.poll(&ctx) {
+            match ev {
+                decode_ui::Event::Added { path, .. } => {
+                    if self.capture.as_ref().is_some_and(|c| c.path() == path) {
+                        self.reload_analyzers();
+                        self.table.show = true;
+                    }
+                }
+                decode_ui::Event::Failed(e) => log::warn!("decode: {e}"),
+            }
+        }
+        if self.table.show
+            && let Some(cv) = &self.capture
+        {
+            let rate = cv.info().samplerate_hz as f64;
+            let mut act = None;
+            egui::Panel::bottom("table")
+                .resizable(true)
+                .default_size(220.0)
+                .show(ui, |ui| {
+                    act = self.table.panel(ui, cv.file(), &mut self.analyzers, rate);
+                });
+            match act {
+                Some(TableAction::Jump(s, e)) => self.jump_to(s, e),
+                Some(TableAction::Delete(id)) => {
+                    let path = self.capture.as_ref().map(|c| c.path().to_path_buf());
+                    if let Some(path) = path {
+                        match lv_store::analysis::delete_analyzer(&path, id) {
+                            Ok(()) => self.reload_analyzers(),
+                            Err(e) => {
+                                self.message = Some(format!("분석기를 지우지 못했습니다: {e}"))
+                            }
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             self.cursor_text = self.waveform(ui);
         });
         self.channels_window(&ctx);
+        let recording = self.session.is_some();
+        let file = self
+            .capture
+            .as_ref()
+            .map(|c| (c.path().to_path_buf(), self.names.clone()));
+        self.decode.window(
+            &ctx,
+            file.as_ref().map(|(p, n)| (p.as_path(), n.as_slice())),
+            recording,
+        );
         // eframe reports the previous frame's total CPU time.
         if let Some(last) = self.timings.back_mut() {
             last.1 = cpu_prev_ms;

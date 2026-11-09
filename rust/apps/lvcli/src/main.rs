@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use lv_capture::{Capture, CaptureReport, CaptureRequest};
+use lv_capture::{Capture, CaptureReport, CaptureRequest, Outcome, Trigger};
 use lv_fx2lafw::{FoundDevice, Fx2lafw};
 use lv_store::CaptureFile;
 
@@ -39,6 +39,18 @@ enum Cmd {
         /// 같은 이름의 파일을 덮어씀
         #[arg(long)]
         overwrite: bool,
+        /// 이 시간(초)이 지나면 멈춤 (수동 중지와 같음)
+        #[arg(long)]
+        time: Option<f64>,
+        /// 트리거 (예: 0=r,3=1). r 상승, f 하강, e 에지, 1 High, 0 Low의 AND
+        #[arg(short, long)]
+        trigger: Option<String>,
+        /// 트리거 앞 구간 비율 % (샘플 수를 정했을 때)
+        #[arg(long, default_value_t = 10)]
+        pre: u8,
+        /// 채널 이름, 쉼표로 구분 (예: TX,RX,SCL,SDA)
+        #[arg(long)]
+        names: Option<String>,
         #[command(flatten)]
         dev: DeviceArgs,
     },
@@ -61,6 +73,28 @@ enum Cmd {
     },
     /// .lvcap 파일 정보
     Info { file: PathBuf },
+    /// .lvcap을 다른 형식으로 내보내기 (STO-5, STO-6)
+    Export {
+        file: PathBuf,
+        /// csv (Saleae CSV), bin (Saleae 바이너리, 채널마다 digital_N.bin), sr (sigrok), raw (샘플마다 1바이트)
+        #[arg(short, long, value_enum)]
+        format: ExportFormat,
+        /// 출력 파일 (bin은 폴더). 없으면 입력 이름에 확장자만 바꿈
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// 내보낼 채널, 쉼표로 구분 (예: 0,1). 없으면 모든 채널 (sr은 항상 모두)
+        #[arg(short, long, value_delimiter = ',')]
+        channels: Vec<usize>,
+    },
+    /// sigrok .sr 파일을 .lvcap으로 불러오기 (STO-5)
+    Import {
+        file: PathBuf,
+        /// 출력 파일. 없으면 입력 이름.lvcap
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        overwrite: bool,
+    },
     /// 저장 속도 측정: 압축이 안 되는 무작위 데이터와 0만 있는 데이터
     StoreBench {
         #[arg(short, long, default_value = "50M")]
@@ -77,6 +111,21 @@ enum Cmd {
         #[arg(short, long, default_value = "synth.lvcap")]
         output: PathBuf,
     },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ExportFormat {
+    Csv,
+    Bin,
+    Sr,
+    Raw,
+}
+
+/// Capture options beyond the device.
+struct CaptureOpts {
+    time: Option<f64>,
+    trigger: Option<Trigger>,
+    names: Option<Vec<String>>,
 }
 
 #[derive(clap::Args)]
@@ -111,8 +160,22 @@ fn run(cli: Cli) -> Result<()> {
             samples,
             output,
             overwrite,
+            time,
+            trigger,
+            pre,
+            names,
             dev,
-        } => capture(&rate, samples.as_deref(), &output, overwrite, &dev),
+        } => {
+            let opts = CaptureOpts {
+                time,
+                trigger: trigger
+                    .map(|t| Trigger::parse(&t, pre))
+                    .transpose()
+                    .map_err(|e| anyhow::anyhow!("트리거: {e}"))?,
+                names: names.map(|n| n.split(',').map(|s| s.trim().to_string()).collect()),
+            };
+            capture(&rate, samples.as_deref(), &output, overwrite, &opts, &dev)
+        }
         Cmd::Bench {
             rate,
             samples,
@@ -122,6 +185,17 @@ fn run(cli: Cli) -> Result<()> {
             dev,
         } => bench(&rate, &samples, runs, dir, keep, &dev),
         Cmd::Info { file } => info(&file),
+        Cmd::Export {
+            file,
+            format,
+            output,
+            channels,
+        } => export(&file, format, output, &channels),
+        Cmd::Import {
+            file,
+            output,
+            overwrite,
+        } => import(&file, output, overwrite),
         Cmd::StoreBench { samples, output } => synth::store_bench(parse_si(&samples)?, &output),
         Cmd::Synth {
             samples,
@@ -205,12 +279,31 @@ fn capture(
     samples: Option<&str>,
     output: &Path,
     overwrite: bool,
+    opts: &CaptureOpts,
     args: &DeviceArgs,
 ) -> Result<()> {
     let rate = parse_si(rate)?;
     let samples = samples.map(parse_si).transpose()?;
+    let mut req = request(rate, samples, output, overwrite, args);
+    if let Some(names) = &opts.names {
+        if names.len() > 8 {
+            bail!("채널 이름은 8개까지입니다 ({}개를 줌)", names.len());
+        }
+        for (i, n) in names.iter().enumerate() {
+            req.channel_names[i] = n.clone();
+        }
+    }
+    req.trigger = opts.trigger.clone();
+    if let Some(t) = &req.trigger {
+        eprintln!(
+            "트리거: {} (앞 구간 {} 샘플)",
+            t.spec(),
+            fmt_samples(req.pre_trigger_samples())
+        );
+    }
     let dev = open_device(args)?;
-    let cap = Capture::start(dev, request(rate, samples, output, overwrite, args))?;
+    let cap = Capture::start(dev, req)?;
+    let deadline = opts.time.map(Duration::from_secs_f64);
 
     // Ctrl+C stops the capture cleanly instead of killing the process.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -220,24 +313,34 @@ fn capture(
     }
     let t = Instant::now();
     while !cap.is_finished() {
-        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+        if stop.load(std::sync::atomic::Ordering::Relaxed)
+            || deadline.is_some_and(|d| t.elapsed() >= d)
+        {
             cap.stop();
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(100));
         let p = cap.progress().snapshot();
         eprint!(
-            "\r{:>7.2} s  받음 {:>12}  저장 {:>12}  대기열 {:>3}/{}   ",
+            "\r{:>7.2} s  받음 {:>12}  저장 {:>12}  대기열 {:>3}/{}{}   ",
             t.elapsed().as_secs_f64(),
             fmt_samples(p.received),
             fmt_samples(p.written),
             p.queued,
-            p.queue_capacity
+            p.queue_capacity,
+            if p.triggered {
+                ""
+            } else {
+                "  트리거 대기"
+            }
         );
     }
     eprintln!();
     let (_, report) = cap.wait();
     let report = report?;
     print_report(&report);
+    if report.outcome == Outcome::NotTriggered {
+        let _ = std::fs::remove_file(output);
+    }
     if !report.outcome.is_ok() {
         bail!("{}", report.outcome.describe());
     }
@@ -247,6 +350,13 @@ fn capture(
 fn print_report(r: &CaptureReport) {
     let s = &r.stream;
     println!("결과: {}", r.outcome.describe());
+    if let Some(at) = r.trigger_sample {
+        println!(
+            "  트리거 위치: 샘플 {} ({:.6} s)",
+            fmt_samples(at),
+            at as f64 / r.info.samplerate_hz.max(1) as f64
+        );
+    }
     println!(
         "  샘플 {} ({}), {:.3} s, 실효 {}",
         fmt_samples(r.info.num_samples),
@@ -362,12 +472,88 @@ fn info(path: &Path) -> Result<()> {
         i.duration_secs()
     );
     println!("채널      {}", i.channel_names.join(", "));
+    if let Some(t) = &i.trigger {
+        println!("트리거    {t}");
+    }
     println!(
         "덩어리    {}개, 샘플 저장 {} (압축 {:.1}배), 파일 {}",
         f.chunks().len(),
         fmt_bytes(stored),
         i.num_samples as f64 / stored.max(1) as f64,
         fmt_bytes(file_size)
+    );
+    Ok(())
+}
+
+fn export(
+    path: &Path,
+    format: ExportFormat,
+    output: Option<PathBuf>,
+    channels: &[usize],
+) -> Result<()> {
+    let f = CaptureFile::open(path)?;
+    let t = Instant::now();
+    match format {
+        ExportFormat::Csv => {
+            let out = output.unwrap_or_else(|| path.with_extension("csv"));
+            let rows = lv_store::export::csv(&f, &out, channels)?;
+            println!(
+                "{}: {} 행 ({:.2} s)",
+                out.display(),
+                fmt_samples(rows),
+                t.elapsed().as_secs_f64()
+            );
+        }
+        ExportFormat::Bin => {
+            let out = output.unwrap_or_else(|| path.with_extension(""));
+            let files = lv_store::export::saleae_binary(&f, &out, channels)?;
+            for (p, n) in &files {
+                println!("{}: 전이 {}", p.display(), fmt_samples(*n));
+            }
+            println!("{:.2} s", t.elapsed().as_secs_f64());
+        }
+        ExportFormat::Raw => {
+            let out = output.unwrap_or_else(|| path.with_extension("bin"));
+            let n = lv_store::export::raw(&f, &out)?;
+            println!(
+                "{}: {} 샘플 ({:.2} s)",
+                out.display(),
+                fmt_samples(n),
+                t.elapsed().as_secs_f64()
+            );
+        }
+        ExportFormat::Sr => {
+            if !channels.is_empty() {
+                bail!(".sr 내보내기는 항상 모든 채널을 씁니다 (--channels 없이 실행)");
+            }
+            let out = output.unwrap_or_else(|| path.with_extension("sr"));
+            let n = lv_store::sigrok::export(&f, &out)?;
+            let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "{}: {} 샘플, {} ({:.2} s)",
+                out.display(),
+                fmt_samples(n),
+                fmt_bytes(size),
+                t.elapsed().as_secs_f64()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn import(path: &Path, output: Option<PathBuf>, overwrite: bool) -> Result<()> {
+    let out = output.unwrap_or_else(|| path.with_extension("lvcap"));
+    let t = Instant::now();
+    let (info, stats) = lv_store::sigrok::import(path, &out, overwrite)?;
+    println!(
+        "{}: {} 샘플 ({}), 채널 {}, 저장 {} (압축 {:.1}배), {:.2} s",
+        out.display(),
+        fmt_samples(info.num_samples),
+        fmt_rate(info.samplerate_hz),
+        info.channel_names.join(", "),
+        fmt_bytes(stats.stored_bytes),
+        stats.ratio(),
+        t.elapsed().as_secs_f64()
     );
     Ok(())
 }

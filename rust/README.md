@@ -1,6 +1,6 @@
 # logicview Rust 버전
 
-[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M0 시제품** 단계다.
+[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M1 캡처·저장** 단계다 (M0 시제품 완료, NFR-1만 남음).
 기존 SLogicView 기반 빌드(저장소 루트)와 따로 빌드한다.
 
 ## 구성
@@ -8,10 +8,10 @@
 | 경로 | 내용 |
 | --- | --- |
 | `crates/lv-fx2lafw` | fx2lafw USB 드라이버 (nusb): 장치 찾기, 펌웨어 업로드, 시작 명령, bulk 스트리밍 |
-| `crates/lv-store` | `.lvcap`(SQLite) 쓰기·읽기, zstd 압축, 줌 요약(OR·AND 3단계) |
-| `crates/lv-capture` | 수집 세션: USB 스레드 → 유계 대기열 → 저장 스레드, 진행 상태 |
-| `apps/lvcli` | 명령줄 도구: `devices`, `capture`, `bench`, `info`, `synth`, `store-bench` |
-| `apps/logicview` | egui 파형 화면: 열기(버튼·끌어다 놓기), 휠 줌, 끌기 이동, 커서 값 |
+| `crates/lv-store` | `.lvcap`(SQLite) 쓰기·읽기, zstd 압축, 줌 요약(OR·AND 3단계), `.sr` 불러오기·내보내기, Saleae CSV·바이너리 내보내기 |
+| `crates/lv-capture` | 수집 세션: USB 스레드 → 유계 대기열 → 저장 스레드, 진행 상태, 소프트웨어 트리거 |
+| `apps/lvcli` | 명령줄 도구: `devices`, `capture`, `bench`, `info`, `export`, `import`, `synth`, `store-bench` |
+| `apps/logicview` | egui 파형 화면: `.lvcap`·`.sr` 열기(버튼·끌어다 놓기), 휠 줌, 끌기 이동, 커서 값 |
 
 ## 빌드
 
@@ -32,17 +32,25 @@ PulseView 설치 폴더 순서로 찾는다.
 ```powershell
 lvcli devices
 lvcli capture --rate 24M --samples 50M -o cap.lvcap      # --samples 없으면 Ctrl+C까지
+lvcli capture -r 1M --time 5 -o cap.lvcap                # 5초 뒤 멈춤 (Ctrl+C와 같은 수동 중지)
+lvcli capture -r 4M -s 1M -t 0=f,1=1 --pre 20 -o cap.lvcap --names TX,RX
+                                                         # 트리거: D0 하강 AND D1 High, 앞 20%
 lvcli bench --rate 24M --samples 50M --runs 5            # 시제품 관문 시험
 lvcli info cap.lvcap
+lvcli export cap.lvcap -f csv                            # cap.csv (Time [s],Channel 0..)
+lvcli export cap.lvcap -f bin -c 0,1                     # cap\digital_0.bin, digital_1.bin
+lvcli export cap.lvcap -f sr                             # cap.sr (PulseView·sigrok-cli에서 열림)
+lvcli export cap.lvcap -f raw                            # cap.bin (샘플마다 1바이트)
+lvcli import other.sr                                    # other.lvcap
 lvcli synth --samples 50M -o synth.lvcap                 # 화면 시험용 합성 캡처
-logicview cap.lvcap
+logicview cap.lvcap                                      # .sr도 열림 (임시 폴더에 .lvcap으로 바꿔 엶)
 logicview --bench synth.lvcap                            # 줌·이동을 자동으로 하고 프레임 시간 출력
 ```
 
 ## M0 시험 결과 (2026-11-10)
 
 PC: Intel USB 3.1 호스트 컨트롤러, 애널라이저는 루트 허브 2번 포트에 직접 연결(`usb/2-2`, 허브 없음).
-입력 신호 없음(모든 채널 0).
+입력 신호 없음(빈 입력은 모든 채널 1).
 
 ### 장치 (NFR-1)
 
@@ -99,11 +107,36 @@ PC: Intel USB 3.1 호스트 컨트롤러, 애널라이저는 루트 허브 2번 
 목표(프레임 16 ms 이하)를 넉넉히 넘는다. 최대값은 새 덩어리를 처음 읽어 압축을 풀 때다.
 한글 채널 이름은 맑은 고딕으로 제대로 표시된다. 한글 입력(IME)은 M0 화면에 입력 칸이 없어 아직 확인하지 않았다.
 
+## M1 시험 결과 (2026-11-10)
+
+트리거 문법은 sigrok-cli와 같다: `채널=조건`을 쉼표로 이은 AND. 조건은 `r` 상승, `f` 하강, `e` 에지, `1` High,
+`0` Low. 에지 조건은 앞 샘플이 있어야 하므로 첫 샘플에서는 걸리지 않고, 레벨 조건만 있으면 첫 샘플에서도 걸린다.
+트리거 앞 구간은 `--samples`의 `--pre`%이고, 트리거 전에 받은 샘플이 모자라면 그만큼 뒤를 더 받아 샘플 수를 채운다.
+트리거 위치는 `capture.trigger_json`에 `{"conditions":"0=r","pre_percent":10,"sample":N}`으로 남는다.
+
+| 시험 | 결과 |
+| --- | --- |
+| 단위 테스트 (`cargo test`) | 27개 통과: 트리거 조건·블록 경계 에지·앞 구간 링 버퍼·트리거 전 중지, `.sr` 왕복, CSV·바이너리 형식 |
+| `.sr` 내보내기 → sigrok-cli | 합성 5 M 샘플: `sigrok-cli --show`가 채널 이름(한글)·샘플레이트·샘플 수를 읽고, `-O binary` 결과가 원본과 SHA-256 같음 |
+| libsigrok가 쓴 `.sr` 불러오기 | sigrok-cli로 다시 저장한 파일: 원본과 SHA-256 같음. 32채널 `slogic32-demo.sr`(unitsize 4): 앞 8채널이 sigrok-cli 출력과 같음 |
+| 수동 중지 (장치, `usb/2-3.3.1`) | 1 MHz `--time 2`: 2,017,280 샘플, 16 MHz `--time 1`: 16,185,856 샘플, 둘 다 빈 전송 0, 상태 `complete` |
+| 트리거 (장치) | 4 MHz, 1 M 샘플, `0=1`: 첫 샘플에서 걸림, 1,000,000 샘플 저장, `trigger_json` 기록 |
+| 트리거가 안 걸림 (장치) | `0=f`, 입력 없음, `--time 1.5`: "트리거 전에 중지, 저장한 것 없음", 빈 파일 지움, 종료 코드 1 |
+| logicview로 `.sr` 열기 | libsigrok가 쓴 `.sr`을 열어 8채널 파형 표시 |
+
+장치를 뽑았을 때(DEV-6)는 USB 스레드가 `Disconnected`로 끝나고 그때까지 받은 샘플을 `aborted` 상태로 저장한다.
+실제로 뽑아 보는 시험은 아직 하지 않았다.
+
 ## PRD와 다르게 한 것
 
 - CAP-6: 전송이 STALL로 끝나면 halt를 풀고 **수집을 거기서 끝낸다** (다시 큐에 넣으면 그 사이 샘플이 빠진
   캡처가 되기 때문). 이유는 결과에 "USB 파이프 STALL"로 알린다.
 - 장치가 펌웨어를 갖고 있는지는 문자열 대신 버전 요청(`0xB0`)에 답하는지로 판단한다. Windows에서는 제조사
   문자열이 비어 있었다.
+- CAP-8: 샘플 수 없이(수동 중지) 트리거를 쓰면 트리거 앞 구간이 없다 (비율을 적용할 전체 길이가 없으므로).
+  트리거가 걸리기 전에 멈추면 아무것도 저장하지 않는다.
+- STO-6 외에 `raw` 내보내기(샘플마다 1바이트, `sigrok-cli -O binary`와 같은 형식)를 더했다. sigrok 결과와
+  바이트 단위로 비교하는 시험에 쓴다.
 - 한글 글꼴: Noto Sans KR을 넣지 않았다. eframe 0.37이 시스템 글꼴 대체를 기본으로 하므로 맑은 고딕이
   없는 PC에서도 한글이 나온다.
+

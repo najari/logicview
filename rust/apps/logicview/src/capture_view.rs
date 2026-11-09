@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 
-use lv_store::summary::{Entry, LEVEL_BLOCK, MAX_LEVEL};
+use lv_store::summary::{Entry, LEVEL_BLOCK, LEVEL_FACTOR, MAX_LEVEL, combine};
 use lv_store::{CHUNK_SAMPLES, CaptureFile, CaptureInfo};
 
 /// Raw chunks kept decompressed (16 MiB).
@@ -29,6 +29,32 @@ impl CaptureView {
             levels,
             cache: VecDeque::new(),
         })
+    }
+
+    /// Pick up samples written since the last look (UI-8).
+    pub fn refresh(&mut self) -> lv_store::Result<()> {
+        self.file.refresh()?;
+        // Re-read level 1 from the last part-filled chunk on, then rebuild
+        // the coarser levels from it.
+        let per_chunk = CHUNK_SAMPLES / LEVEL_FACTOR;
+        let full = self.levels[1].len() / per_chunk;
+        let fresh = self.file.summary_l1_from(full)?;
+        self.levels[1].truncate(full * per_chunk);
+        self.levels[1].extend(fresh);
+        for l in 2..=MAX_LEVEL {
+            self.levels[l] = combine(&self.levels[l - 1], LEVEL_FACTOR);
+        }
+        // A part-filled chunk may have grown since it was cached.
+        self.cache.retain(|(_, d)| d.len() == CHUNK_SAMPLES);
+        Ok(())
+    }
+
+    pub fn file(&self) -> &CaptureFile {
+        &self.file
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.file.info.status == lv_store::Status::Recording
     }
 
     pub fn info(&self) -> &CaptureInfo {

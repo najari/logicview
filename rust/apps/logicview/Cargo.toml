@@ -10,5 +10,7 @@ anyhow = "1.0.104"
 eframe = "0.37.0"
 env_logger = "0.11.11"
 log = "0.4.35"
+lv-capture = { path = "../../crates/lv-capture" }
+lv-fx2lafw = { path = "../../crates/lv-fx2lafw" }
 lv-store = { path = "../../crates/lv-store" }
 rfd = "0.18.0"

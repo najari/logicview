@@ -1,6 +1,6 @@
 # logicview Rust 버전
 
-[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M1 캡처·저장** 단계다 (M0 시제품 완료, NFR-1만 남음).
+[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M2 파형 화면** 단계다 (M0은 NFR-1만 남음, M1 완료).
 기존 SLogicView 기반 빌드(저장소 루트)와 따로 빌드한다.
 
 ## 구성
@@ -11,7 +11,7 @@
 | `crates/lv-store` | `.lvcap`(SQLite) 쓰기·읽기, zstd 압축, 줌 요약(OR·AND 3단계), `.sr` 불러오기·내보내기, Saleae CSV·바이너리 내보내기 |
 | `crates/lv-capture` | 수집 세션: USB 스레드 → 유계 대기열 → 저장 스레드, 진행 상태, 소프트웨어 트리거 |
 | `apps/lvcli` | 명령줄 도구: `devices`, `capture`, `bench`, `info`, `export`, `import`, `synth`, `store-bench` |
-| `apps/logicview` | egui 파형 화면: `.lvcap`·`.sr` 열기(버튼·끌어다 놓기), 휠 줌, 끌기 이동, 커서 값 |
+| `apps/logicview` | egui 앱: 장치에서 수집(실시간 파형), `.lvcap`·`.sr` 열기, `.lvcap`·`.sr`·CSV로 저장, 휠 줌, 끌기 이동, 커서 값, 마커 2개, 채널 이름·숨기기 |
 
 ## 빌드
 
@@ -44,6 +44,7 @@ lvcli export cap.lvcap -f raw                            # cap.bin (샘플마다
 lvcli import other.sr                                    # other.lvcap
 lvcli synth --samples 50M -o synth.lvcap                 # 화면 시험용 합성 캡처
 logicview cap.lvcap                                      # .sr도 열림 (임시 폴더에 .lvcap으로 바꿔 엶)
+logicview --rate 1M --samples manual --trigger 0=f       # 수집 도구 막대 미리 설정
 logicview --bench synth.lvcap                            # 줌·이동을 자동으로 하고 프레임 시간 출력
 ```
 
@@ -126,6 +127,34 @@ PC: Intel USB 3.1 호스트 컨트롤러, 애널라이저는 루트 허브 2번 
 
 장치를 뽑았을 때(DEV-6)는 USB 스레드가 `Disconnected`로 끝나고 그때까지 받은 샘플을 `aborted` 상태로 저장한다.
 실제로 뽑아 보는 시험은 아직 하지 않았다.
+
+## M2 파형 화면 (2026-11-10)
+
+앱 사용법:
+
+- 위 줄: 장치, 샘플레이트, 샘플 수(또는 수동 중지), 트리거, **시작/중지**. 장치 목록은 2초마다 백그라운드에서 다시 찾는다.
+  수집 파일은 `%LOCALAPPDATA%\logicview\captures\capture-<UTC 시각>.lvcap`에 바로 쓰인다.
+- 수집 중에는 파형이 0.1초마다 늘어난다(UI-8). 저장 스레드가 0.25초마다 트랜잭션을 커밋하고, 덜 찬 덩어리도
+  써 둔다(나중에 꽉 찬 덩어리로 바꿔 씀). 확대·이동하면 따라가기를 멈추고, "전체 보기"로 다시 따라간다.
+- 아래 줄: 열기, **저장**(`.lvcap`은 `VACUUM INTO`로 파일 하나로 복사, `.sr`, CSV는 보이는 채널만), 전체 보기·확대·축소,
+  **채널…** 창(이름 바꾸기, 숨기기; 열린 파일의 `channel` 표에 저장되고 다음 수집 이름으로도 쓰임).
+- 파형 클릭: 마커 A, 다시 클릭: B, 그다음은 가까운 마커를 옮김. 클릭한 행의 채널 에지가 8픽셀 안에 있으면 그 에지에 붙는다.
+  오른쪽 클릭·Esc: 마커 지우기. 상태 줄에 A·B 시각과 Δ(주파수)를 보인다. 트리거 위치는 빨간 `T` 선.
+
+| 시험 (앱, UI Automation으로 버튼 조작) | 결과 |
+| --- | --- |
+| 16 MHz, 10 M 샘플, 시작 | "완료 · 10,000,000 샘플 · 0.631 s", 파형 표시 |
+| 1 MHz, 수동 중지, 시작 → 3초 → 중지 | 수집 중 파형이 늘어남(받음 3,010,560일 때 화면 2,867,200), 중지 후 4,638,720 샘플 `complete` |
+| 4 MHz, 1 M 샘플, 트리거 `0=1` | "완료 · 1,000,000 샘플 · 0.263 s · 트리거 샘플 0" |
+| 수집 끝난 파일 | 앱이 읽던 연결을 닫고 WAL을 합쳐 `.lvcap` 하나만 남음 |
+| 합성 캡처, 마커 12,000·36,000 샘플(`--markers`) | "A 500 µs · B 1.5 ms · Δ 1 ms (1 kHz)", D2 1 kHz 에지와 일치 |
+| 채널 창: D0 이름 "TX 송신", D5·D6 숨김 | 화면에서 빠지고, 파일에 저장되어 다시 열어도 같음 (`lvcli info`에 "숨긴 채널") |
+| 저장… → `.lvcap` | 1.5 MB 한 파일로 복사됨 |
+| `logicview --bench` 50 M 샘플 | 프레임 CPU 평균 0.66 ms, 최대 5.51 ms (UI-4 유지) |
+
+아직 하지 않은 것: 한글 입력기(IME) 조합 입력 확인(자동화는 입력기를 거치지 않음), 실제 마우스 클릭으로 마커 놓기
+(winit이 보낸 창 메시지를 받지 않아 `--markers`로 대신 시험), 저장 대화상자에서 `.sr`·CSV 고르기(저장 함수는
+단위 테스트·`lvcli`로 시험), UI-10(마지막 설정 기억, P2).
 
 ## PRD와 다르게 한 것
 

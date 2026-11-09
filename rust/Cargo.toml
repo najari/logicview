@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/lv-fx2lafw",
+    "crates/lv-store",
+    "crates/lv-capture",
+    "apps/lvcli",
+    "apps/logicview",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/najari/logicview"
+
+[profile.release]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# zstd, SQLite and the waveform math are slow unoptimised even in debug builds.
+opt-level = 2

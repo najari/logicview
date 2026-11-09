@@ -1,0 +1,14 @@
+[package]
+name = "logicview"
+description = "logicview: logic analyzer viewer (egui)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+eframe = "0.37.0"
+env_logger = "0.11.11"
+log = "0.4.35"
+lv-store = { path = "../../crates/lv-store" }
+rfd = "0.18.0"

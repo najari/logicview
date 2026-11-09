@@ -3,3 +3,4 @@ build.log
 tests/out/
 __pycache__/
 build-cli.log
+rust/target/

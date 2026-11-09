@@ -1,0 +1,12 @@
+[package]
+name = "lv-store"
+description = "logicview .lvcap capture files (SQLite): chunks, zstd, zoom summaries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+log = "0.4.35"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+thiserror = "2.0.21"
+zstd = "0.14.3"

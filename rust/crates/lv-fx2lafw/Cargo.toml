@@ -1,0 +1,11 @@
+[package]
+name = "lv-fx2lafw"
+description = "Driver for FX2 logic analyzers running fx2lafw firmware (nusb/WinUSB)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+log = "0.4.35"
+nusb = "0.2.9"
+thiserror = "2.0.21"

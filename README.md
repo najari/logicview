@@ -31,6 +31,8 @@ Windows 기본 libusb에서 fx2lafw가 제대로 동작하도록 패치 3개를 
 | `mcp/logicview_mcp.py` | Saleae Logic 2 MCP 서버와 같은 도구를 제공하는 MCP 서버 ([아래](#mcp-서버)) |
 | `mcp/start-mcp.cmd` | 앱 폴더에서 MCP 서버 실행 |
 | `mcp/tests/test_mcp.py` | MCP 서버 종단 테스트 (HTTP로 모든 도구 호출, `--hardware`로 실제 캡처) |
+| `rust/` | Rust + egui로 새로 만드는 버전 (개발 중, [rust/README.md](rust/README.md), [PRD](docs/prd-rust-logicview.md)) |
+| `docs/` | [Rust·egui 전환 검토](docs/rust-egui-review.md), [개발지시서(PRD)](docs/prd-rust-logicview.md) |
 
 ## 준비물
 

@@ -107,10 +107,13 @@ impl Outcome {
             Outcome::Stopped => "stopped by user",
             Outcome::Overflow => "stopped: storage could not keep up with the sample rate",
             Outcome::DeviceError(StreamEnd::DeviceStopped) => {
-                "stopped: the device stopped sending data (try a port on the PC itself, not a hub)"
+                "stopped: the device stopped sending data, its buffer overflowed \
+                 (this USB port could not keep up: use a lower rate, a port on the PC \
+                 without a hub, or another PC port)"
             }
             Outcome::DeviceError(StreamEnd::Stalled) => {
-                "stopped: the USB pipe stalled (try a port on the PC itself, not a hub)"
+                "stopped: the USB pipe stalled (use a port on the PC without a hub, \
+                 or another PC port)"
             }
             Outcome::DeviceError(StreamEnd::Disconnected) => "stopped: the device was unplugged",
             Outcome::DeviceError(_) => "stopped: device error",

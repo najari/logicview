@@ -1,0 +1,203 @@
+0.7.0 (2017-06-12)
+------------------
+
+ * Update sigrok-cli to the new APIs from both libsigrok 0.5.0 and also
+   libsigrokdecode 0.5.0.
+ * -P <decoder> --show:
+   - List the binary output classes of the decoder.
+   - List the possible input and output IDs of the decoder.
+ * --help:
+   - Clarify that --show also lists input/output format options,
+     as well as protocol decoder options (bug #851).
+   - Show a few typical invocations of e.g. --samples/--time/--continuous.
+ * Add an -L|--list-supported option; this used to be part of -V (bug #604).
+ * Drop the superfluous -S|--protocol-decoder-stack option. Stacking can
+   be done by simply using -P and providing the decoders in the correct order.
+ * Allow multiple -P options to decode multiple stacks (bug #868).
+ * Show decoder instance IDs so the user can tell instances apart (bug #868).
+ * Show annotations based on decoder ID (not instance ID).
+   - Behaviour preserved:
+     Single PD, no -A flag => all annotations from PD
+     Single PD, -A pdid => all annotations from PD
+     Single PD, -A pdid=annX => annX from PD
+   - Behaviour now added:
+     Duplicate PDs, no -A flag => all annotations from all PDs
+     Duplicate PDs, -A pdid => all annotations from all PDs of type pdid
+     Duplicate PDs, -A pdid=annX => all annX from all PDs of type pdid
+ * Fix various memory leaks.
+ * ./configure summary: Show linker flags used.
+ * NSIS:
+   - Update to Python 3.4.x. We can't use any higher version for the time
+     being, since 3.4.x is the last version to support Windows XP.
+   - Place the example .sr files in a separate installer section.
+   - Limit example .sr files to a small set to shrink the installer size.
+   - Clarify Start menu links (e.g. "Uninstall") to avoid confusion.
+ * HACKING: Update URL to Linux kernel coding style.
+ * Fix some compiler warnings (clang).
+
+0.6.0 (2016-01-29)
+------------------
+
+ * Update sigrok-cli to the new APIs from both libsigrok 0.4.0 and also
+   libsigrokdecode 0.4.0.
+ * Updated build requirements:
+   - libglib >= 2.32.0
+   - libsigrok >= 0.4.0
+   - libsigrokdecode >= 0.4.0
+ * Fix various compiler errors/warnings.
+ * Check srd_decoder_get_by_id() output to prevent a segfault (bug #370).
+ * manpage: Document the -M and -B options.
+ * Improve option parsing code and make it more robust.
+ * Drop references to obsolete sigrok-commits mailing list.
+ * Properly handle saving logic data packets of any size.
+ * Add 'analog' output module to default output.
+ * Fix various memory leaks.
+ * Show PD annotation row members by name, not number (bug #388).
+ * Handle floating point options for output modules.
+ * If only one non-demo device is present, select it.
+ * Allow input from stdin by specifying "-i -".
+ * Support uint64 input/output module options.
+ * Command line option changes:
+   - Add the --get option.
+   - Add the -T|--transform-module option.
+ * Always save all channels to a session file (bug #410).
+ * Support boolean command line options (bug #450).
+ * NSIS:
+   - Drop libusb0.dll, we always use libusb-1.0 now.
+   - Add start menu entries for Zadig (bug #543).
+   - Install data files into a 'share' subdirectory.
+   - Various additional NSIS file improvements.
+ * Fix a runtime warning with --show (bug #520).
+ * Add "-git-<hash>" suffix to development version numbers.
+ * Fix a libzip-related issue resulting in errors writing .sr files (bug #570).
+ * Fix a unitsize related issue (bug #352).
+ * Add support for SR_T_MQLIST and SR_T_MQ.
+ * Modernize the whole autotools setup.
+
+0.5.0 (2014-05-06)
+------------------
+
+ * Update sigrok-cli to the new APIs from both libsigrok 0.3.0 and also
+   libsigrokdecode 0.3.0.
+ * Add support for the new channel groups feature in libsigrok.
+ * Report channel groups (drivers) and annotation rows (PDs) in --show.
+ * The protocol decoder output verbosity now depends on the --loglevel used.
+ * Only show the longest annotation per default if multiple are provided by
+   the PD. Higher numbers for the -l option will show them all.
+ * Allow both hex and decimal numbers as values for command-line options.
+ * Add support for an explicit "sigrok" file format option that can be
+   used with --input-format or --output-format (bug #131).
+ * If no PD annotation class is specified, default to showing all (bug #149).
+ * Fix an issue when running decoders with optional channels (bug #138).
+ * Report possible PD option values in --show output (bug #330).
+ * Allow saving of output in continuous mode (bug #122).
+ * Add support for libsigrok's SR_T_DOUBLE_RANGE config key (bug #335).
+ * Add support for config keys of type G_VARIANT_TYPE_INT32.
+ * Fix a bug which involved trying to save a file containing no data.
+ * Fix an internal probe ordering issue (bug #268).
+ * Fix various memory leak issues (bug #134, others).
+ * Fix a bug causing samplerates in session files being zero (bug #340).
+ * Fix segfault during analog acquisition without '-O analog' (bugs #90, #105).
+ * Fix a compile issue when building without libsigrokdecode (bug #351).
+ * Command line option changes:
+   - Add the -g|--channel-group option.
+   - Add the -M option (for PD meta output type support).
+   - Add the -B option (for PD binary output type support).
+   - Rename the -p|--probes option to -C|--channels.
+ * Various improvements to the NSIS file for better Windows installer support.
+   - Ship (redistributable) firmware files in the Windows installer.
+   - Ship libusb0.dll in the Windows installer (bug #243).
+   - Ship zadig.exe and zadig_xp.exe in the Windows installer.
+   - Ship all sample files from sigrok-dumps in the Windows installer.
+   - Don't ship/run the full Python MSI installer, only the required files.
+   - Fix a working directory issue in the installer.
+ * Build system:
+   - Use a non-recursive automake setup (fewer files, less clutter).
+   - configure output: Show which libs are required and which are optional.
+ * manpage: Various documentation updates.
+
+0.4.0 (2013-05-04)
+------------------
+
+ * Update sigrok-cli to the new APIs from both libsigrok 0.2.0 and also
+   libsigrokdecode 0.2.0.
+ * Add support for handling analog data sources (DMMs, scopes, dataloggers).
+ * Bugfix in the handling of -A options with arguments.
+ * Updated build dependencies list.
+   - glib (required): Now must be >= 2.28.0.
+   - libsigrok (required): Now must be >= 0.2.0.
+   - libsigrokdecode (required): Now must be >= 0.2.0.
+ * Add support for specifying input format options.
+ * Probe numbers now generally start at 0 (not 1).
+ * Command line option changes:
+   - The -D|--list-devices option was renamed to --scan.
+   - The -d|--device option was renamed to -c|--config.
+   - The -a|--protocol-decoders option was renamed to -P|--protocol-decoders.
+   - The -s|--protocol-decoder-stack option was renamed to
+     -S|--protocol-decoder-stack.
+   - Added a --driver option to specify which libsigrok driver is to be used.
+   - Added a --show option. This can show details about drivers or PDs.
+   - Added a --frames option which limits the number of frames to get from
+     a supported oscilloscope (or other frame-based device).
+ * Various documentation updates (README, manpage, and so on).
+ * configure: Don't overwrite CFLAGS, but rather amend it.
+
+0.3.1 (2012-05-30)
+------------------
+
+ * Add a ChangeLog file to the tarball.
+ * -V option: If "-l 3" or higher is used, the PD description is shown, too.
+ * -a option: Print optional/required PD probes. Example: sigrok-cli -a uart.
+ * Fix compiling with "Homebrew" (Mac OS X).
+ * Stacking order doesn't have to be specified if it's the same as the
+   PD list. Example: sigrok-cli -i <file.sr> -a i2c,edid -s i2c,edid.
+   The -s option is no longer required in this special case.
+ * Only output module or PD output goes to stdout, everything else to stderr.
+ * Improved error handling: Stop sigrok-cli upon various PD related errors.
+ * New -A | --protocol-decoder-annotations option which allows the user to
+   select which annotation types (and from which PD in the stack) to show.
+ * Update the manpage.
+ * Fix a Makefile.am bug which caused the generated ChangeLog files being
+   accidentally deleted upon 'make distclean'.
+
+0.3.0 (2012-04-17)
+------------------
+
+ * New major version, now depends on libsigrok and libsigrokdecode.
+ * Initial support for protocol decoders (written in Python >= 3).
+   Supports streaming processing, and stacking of protocol decoders.
+   Currently supported: dcf77, mx25lxx05d, i2s, spi, edid, pan1321, mlx90614,
+   rtc8564, transitioncounter, usb, i2cdemux, i2c, i2cfilter, uart.
+ * Add support for the ChronoVu LA8 logic analyzer.
+ * Add support for the ChronoVu LA8 input- and output-formats.
+ * Add support for the CSV output format.
+ * New CLI options: --loglevel, --input-format, --protocol-decoders, and
+   --protocol-decoder-stack.
+ * Changed CLI options: Rename -f|--format to -O|--output-format.
+ * Demo driver: Add all-low and all-high pattern support.
+ * Saleae Logic driver: Initial support for multiple attached devices.
+ * OLS driver: Run-Length Encoding (RLE) support.
+ * Various portability fixes for Mac OS X and MinGW/Windows.
+ * Many bugfixes, improvements, and documentation updates.
+
+0.2.0 (2011-04-03)
+------------------
+
+This is mostly a bugfix release.
+
+ * Fix session saving & input file loading, implement session loading support.
+ * Initial work on an NSIS-based Windows installer for sigrok.
+ * CLI: Change syntax for -d and -f to <thing>:key=value:key2=value2.
+ * Various bugfixes, internal code improvements, and documentation updates.
+ * Improve MinGW/Windows support in sigrok, fix various Windows issues.
+ * Improve Openbench Logic Sniffer output format support and add metadata
+   support (requires jawi's OLS client >= 0.9.4-rc1).
+ * Add FreeBSD support for sigrok.
+ * Add initial doxygen support (sigrok API documentation).
+ * ASIX SIGMA: Fix a firmware loading bug.
+
+0.1.0 (2011-01-20)
+------------------
+
+ * Initial release.
+

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Creative Commons CC0 1.0 Universal (CC0-1.0, Public Domain Dedication). -->
+<component type="desktop">
+  <id>com.sipeed.SLogicView.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0+</project_license>
+  <name>SLogicView</name>
+  <summary>Sipeed logic analyzer and protocol decoding frontend</summary>
+  <description>
+    <p>SLogicView is Sipeed's PulseView-derived frontend for capturing, viewing, and decoding signals with SLogic devices.</p>
+  </description>
+  <url type="homepage">https://www.sipeed.com/</url>
+  <provides>
+    <binary>slogicview</binary>
+  </provides>
+  <launchable type="desktop-id">com.sipeed.SLogicView.desktop</launchable>
+  <mimetypes>
+    <mimetype>application/vnd.sigrok.session</mimetype>
+  </mimetypes>
+</component>

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=SLogicView
+GenericName=Logic analyzer, oscilloscope and MSO GUI
+Categories=Development;Electronics;
+Comment=Capture and analyze signals with Sipeed SLogic devices
+Exec=slogicview
+Icon=slogicview
+Type=Application
+MimeType=application/vnd.sigrok.session;

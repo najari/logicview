@@ -46,17 +46,19 @@ Windows 기본 libusb에서 fx2lafw가 제대로 동작하도록 패치 3개를 
 
 ## 빌드와 조립
 
-SLogic 소스 받기 (PowerShell 또는 아무 셸):
+빌드에 쓰는 원본 소스(SLogic `release-2.3.3`이 고정한 libsigrok, libsigrokdecode, sigrok-cli,
+SLogicView 커밋)는 이 저장소의 [`sources/`](sources/README.md)에 들어 있다. 빌드 스크립트의 첫 인자로
+이 저장소(`logicview`)를 주면 된다. SLogic 저장소를 따로 받아 쓸 수도 있다 (PowerShell 또는 아무 셸):
 ```sh
 git clone https://github.com/sipeed/SLogic.git
 git -C SLogic checkout release-2.3.3
 git -C SLogic submodule update --init sources/libsigrok sources/libsigrokdecode sources/sigrok-cli
 ```
-빌드 (MSYS2 UCRT64 셸, `SLogic`과 이 저장소가 있는 폴더에서). 두 번째 줄(MCP 서버용
+빌드 (MSYS2 UCRT64 셸, 이 저장소가 있는 폴더에서. SLogic을 따로 받았으면 첫 인자를 `SLogic`으로). 두 번째 줄(MCP 서버용
 sigrok-cli)은 `pacman -S mingw-w64-ucrt-x86_64-python`이 더 필요하다:
 ```sh
-bash logicview/build-libsigrok-fx2lafw.sh SLogic logicview/build
-bash logicview/build-sigrok-cli.sh SLogic logicview/build
+bash logicview/build-libsigrok-fx2lafw.sh logicview logicview/build
+bash logicview/build-sigrok-cli.sh logicview logicview/build
 ```
 조립 (PowerShell). `-SigrokCli`를 주면 `sigrok-cli.exe`, `python.exe`(앱에 들어 있는
 Python 3.14 런타임으로 실행되는 MSYS2 실행 파일), `mcp\`도 넣는다. `extensions\`는 항상 들어간다:

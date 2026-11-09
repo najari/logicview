@@ -26,7 +26,7 @@ export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PAT
 for mod in libsigrokdecode sigrok-cli; do
     src="$SLOGIC/sources/$mod"
     [ -f "$src/configure.ac" ] || { echo "missing $src (git submodule update --init sources/$mod)" >&2; exit 1; }
-    echo "== $mod $(git -C "$src" rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "== $mod $( [ -e "$src/.git" ] && git -C "$src" rev-parse HEAD || echo "see sources/README.md")"
     rsync -a --delete --exclude=.git "$src/" "$BUILD/$mod/"
     cd "$BUILD/$mod"
     if [ "$mod" = sigrok-cli ]; then

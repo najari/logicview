@@ -22,7 +22,7 @@ BUILD=$(cd "$BUILD" && pwd)
 SRC="$SLOGIC/sources/libsigrok"
 [ -f "$SRC/configure.ac" ] || { echo "missing $SRC (git submodule update --init sources/libsigrok)" >&2; exit 1; }
 
-echo "libsigrok commit: $(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)"
+echo "libsigrok commit: $( [ -e "$SRC/.git" ] && git -C "$SRC" rev-parse HEAD || echo "see sources/README.md")"
 HERE=$(cd "$(dirname "$0")" && pwd)
 rsync -a --delete --exclude=.git --exclude=build "$SRC/" "$BUILD/libsigrok/"
 cd "$BUILD/libsigrok"

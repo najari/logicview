@@ -103,6 +103,25 @@ DLL만 교체하므로 릴리스에 들어 있는 libsigrok 서브모듈과 같�
 모두 끝까지 받았다. 소프트웨어는 같으므로 USB 포트·버스 상태에 따라 24 MHz가 한계에 걸리는
 것으로 보인다. 24 MHz가 끊기면 다른 본체 포트를 쓰거나 16 MHz 이하로 수집할 것.
 
+### 결과 (2026-11-09, `sources/`에서 다시 빌드)
+
+`sources/`의 소스로 위 빌드·조립 절차를 그대로 따라 만든 앱(MSYS2 UCRT64: gcc 16.2, glib 2.90.1,
+SLogicView 설치 파일 `SLogicView-SLogic-2.3.3-windows-x86_64.exe`, fx2lafw 펌웨어
+`sigrok-firmware-fx2lafw-bin-0.1.7`). `verify-app.sh`는 6개 파일 모두 `ALL IMPORTS RESOLVED`.
+도구 버전이 달라서 DLL은 릴리스 zip과 바이트 단위로 같지 않다.
+
+| 연결 | 앱 | 설정 | 결과 |
+|---|---|---|---|
+| 허브 경유 (`usb/1-1.4`) | SLogicView | 20 kHz, 1 M 샘플 | 50.03초, 1,000,448 바이트, 전송 1954건 모두 성공 |
+| 허브 경유 (`usb/1-1.4`) | SLogicView | 24 MHz, 50 M 샘플 | 약 0.7초 뒤 끊김 (17,290,240 바이트, 성공 72건, 시간 초과 66건) |
+| 허브 경유 (`usb/1-1.4`) | sigrok-cli | 12 / 16 MHz, 50 M 샘플 | 1회 / 2회 모두 끝까지 받음 |
+| 허브 경유 (`usb/1-1.4`) | sigrok-cli | 24 MHz, 50 M 샘플 | 새 빌드 5회 중 1회, 릴리스 zip 3회 중 0회 끝까지 받음 |
+| 본체 직결 (`usb/1-8`) | SLogicView | 24 MHz, 50 M 샘플 | 2.10초, 50,186,752 바이트, 전송 209건 모두 성공 |
+| 본체 직결 (`usb/1-8`) | sigrok-cli | 24 MHz, 50 M 샘플 | 새 빌드 5회 모두, 릴리스 zip 5회 중 4회 끝까지 받음 (1회 34.5 MB에서 끊김) |
+
+같은 앱이 허브를 거치면 24 MHz에서 끊기고 본체 포트에 직접 꽂으면 끝까지 받았다.
+다시 빌드한 앱은 릴리스 zip과 같은 수준으로 동작한다.
+
 ## Saleae Logic 2 확장(HLA) 사용
 
 Logic 2의 High Level Analyzer(HLA) 확장을 SLogicView에서 디코더로 쓸 수 있다.

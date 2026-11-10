@@ -330,11 +330,15 @@ mod tests {
             .unwrap();
         let mut f = CaptureFile::open(&path).unwrap();
         assert_eq!(f.info.status, Status::Recording);
-        assert_eq!(
-            f.info.num_samples,
-            (CHUNK_SAMPLES * crate::CHUNKS_PER_COMMIT) as u64
+        // Whole chunks are visible: all of them, or fewer when a slow
+        // (debug) build passed the 250 ms live commit in between.
+        let n = f.info.num_samples;
+        assert!(
+            n > 0 && n.is_multiple_of(CHUNK_SAMPLES as u64),
+            "{n} samples visible"
         );
-        assert_eq!(f.summary(3).unwrap().len(), 32);
+        assert!(n <= (CHUNK_SAMPLES * crate::CHUNKS_PER_COMMIT) as u64);
+        assert_eq!(f.summary(3).unwrap().len() as u64, n / 262_144);
         w.finish(Status::Complete).unwrap();
         f.refresh().unwrap();
         assert_eq!(f.info.status, Status::Complete);

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 pub use device::{
     FoundDevice, Fx2lafw, PROFILES, Profile, default_firmware_dirs, find_firmware, list_devices,
-    open,
+    open, reuse,
 };
 pub use protocol::SAMPLERATES;
 pub use stream::{StreamConfig, StreamEnd, StreamStats};

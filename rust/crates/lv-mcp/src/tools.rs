@@ -1891,9 +1891,9 @@ fn run_capture(
     let path = req.output.clone();
     let trigger_mode = req.trigger.is_some();
     let cached = slot.lock().ok().and_then(|mut s| s.take());
-    let dev = match cached {
-        Some(d) if d.location == found.location => d,
-        _ => lv_fx2lafw::open(&found, &lv_fx2lafw::default_firmware_dirs())
+    let dev = match lv_fx2lafw::reuse(cached, &found) {
+        Some(d) => d,
+        None => lv_fx2lafw::open(&found, &lv_fx2lafw::default_firmware_dirs())
             .map_err(|e| dev_err(format!("Opening the device failed: {e}")))?,
     };
     let c = lv_capture::Capture::start(dev, req)

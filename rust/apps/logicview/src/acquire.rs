@@ -104,9 +104,9 @@ fn run(
         ctx.request_repaint();
     };
     let cached = slot.lock().ok().and_then(|mut s| s.take());
-    let dev = match cached {
-        Some(d) if d.location == found.location => d,
-        _ => {
+    let dev = match lv_fx2lafw::reuse(cached, &found) {
+        Some(d) => d,
+        None => {
             if !found.has_firmware {
                 send(Msg::Status("펌웨어를 올리는 중… (약 2초)".into()));
             }

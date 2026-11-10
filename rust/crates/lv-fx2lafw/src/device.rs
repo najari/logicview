@@ -207,6 +207,30 @@ impl std::fmt::Debug for Fx2lafw {
     }
 }
 
+impl Fx2lafw {
+    /// Whether this handle still reaches the device. A handle kept from an
+    /// earlier capture goes stale when the analyzer is unplugged, even if it
+    /// is plugged back into the same port (same location).
+    pub fn is_alive(&self) -> bool {
+        vendor_in(&self.intf, CMD_GET_FW_VERSION, 2).is_ok_and(|v| v.len() >= 2)
+    }
+}
+
+/// A handle kept from an earlier capture, if it still fits `found`; a stale
+/// or different one is dropped (and its interface released) here.
+pub fn reuse(cached: Option<Fx2lafw>, found: &FoundDevice) -> Option<Fx2lafw> {
+    let d = cached?;
+    if d.location != found.location {
+        return None;
+    }
+    if d.is_alive() {
+        Some(d)
+    } else {
+        log::info!("{}: kept handle is stale; opening again", d.location);
+        None
+    }
+}
+
 /// Open the device and check that it runs fx2lafw 1.x (DEV-4).
 fn try_open(found: &FoundDevice) -> Result<Fx2lafw, Error> {
     let device = found.info.open().wait()?;

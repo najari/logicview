@@ -1,6 +1,6 @@
 # logicview Rust 버전
 
-[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. 지금은 **M4 MCP** 단계다 (M0은 NFR-1만 남음, M1~M3 완료).
+[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. M5까지 마쳤다 (M0의 NFR-1, 24 MHz를 본체 포트에서 5회 연속은 시험 PC의 포트 사정으로 남음).
 기존 SLogicView 기반 빌드(저장소 루트)와 따로 빌드한다.
 
 ## 구성
@@ -239,6 +239,41 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 | 같은 시험을 기존 Python 서버로 | 그대로 통과 (시험은 도구 16개 또는 `query_frames`까지 17개를 받음) |
 | `logicview --mcp-stdio`로 initialize → tools/list → load_capture → add_analyzer(CAN) → query_frames | 응답 정상, `can.bit` 140개 등 |
 | 앱에서 MCP 켜고 HTTP로 `get_devices` | `fx2lafw:usb/2-3.3.1` |
+
+## M5 배포 (2026-11-10)
+
+```powershell
+.\scripts\package.ps1 -RuntimeDir C:\...\SLogicView-2.3.3-fx2lafw     # dist\logicview-0.1.0-windows-x64.zip
+.\scripts\test-package.ps1 -Zip dist\logicview-0.1.0-windows-x64.zip -Python <python.exe> [-Hardware]
+```
+
+- zip에는 다음이 들어 있다 (954개 파일, 풀면 56 MB, zip 22 MB).
+  - `logicview.exe`, `lvcli.exe`
+  - `firmware\fx2lafw-saleae-logic.fw`
+  - `sigrok\`: 디코더 런타임
+    - DLL 14개(13.5 MB, `dumpbin /dependents`로 고름)
+    - Python 3.14 표준 라이브러리(ensurepip·venv 등 제외)
+    - 디코더 131개
+  - `extensions\`(HLA 설치), `tools\install-winusb.ps1`, `README.txt`, `LICENSE.txt`
+- 실행 파일은 C 런타임을 정적으로 링크한다(`.cargo/config.toml`의 `crt-static`). VC++ 재배포 패키지가 없는 PC에서도 뜬다.
+- 디코더 런타임은 실행 파일 옆 `sigrok\`에서, HLA 설치 스크립트는 실행 파일 옆 `extensions\hla.ps1`에서 찾는다.
+
+`test-package.ps1`은 zip을 빈 폴더에 풀고 새 PC처럼 돌린다. PATH에는 Windows 시스템 폴더만 두고,
+`LOGICVIEW_*`·`PYTHONHOME`·`SIGROKDECODE_*` 환경 변수는 지운다.
+
+| 시험 (2026-11-10, `-Hardware`) | 결과 |
+| --- | --- |
+| 디코더 불러오기 | 131개, 경고 없음 |
+| uart·can 디코딩, `.sr` 불러오기, CSV 내보내기 | 통과 |
+| 장치 찾기, 1 MHz × 1 M 샘플 수집 | 통과 (`usb/2-3.3.1`) |
+| `mcp/tests/test_mcp.py`를 패키지의 `logicview.exe`로 (HLA 설치는 PATH의 Windows PowerShell 5.1) | 44개 모두 통과 |
+| 패키지의 앱을 같은 환경에서 띄워 디코더 창 열기 | 디코더 목록 표시 |
+
+남은 것:
+
+- 펌웨어 업로드 경로(`firmware\`)는 시험 때 장치에 이미 펌웨어가 올라가 있어 확인하지 못했다.
+  애널라이저를 뽑았다 꽂은 뒤 패키지의 `lvcli devices`(펌웨어 "없음")와 `lvcli capture`로 확인한다.
+- 다른 PC에서 실제로 풀어 보는 시험은 아직 하지 않았다.
 
 ## PRD와 다르게 한 것
 

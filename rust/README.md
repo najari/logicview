@@ -2,6 +2,7 @@
 
 [개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. M5까지 마쳤다. M0의 NFR-1(24 MHz를 본체 포트에서 5회 연속)은 2026-11-11에 본체 포트 `usb/1-8`에서 한 번 통과했지만,
 같은 날 다시 돌리면 5회 중 2~4회만 통과해 늘 만족하지는 않는다 (같은 포트에서 sigrok-cli도 같이 끊김).
+애널라이저를 다시 연결한 뒤에는 다시 5회 연속 통과했다(두 번).
 기존 SLogicView 기반 빌드(저장소 루트)와 따로 빌드한다.
 
 ## 구성
@@ -106,6 +107,14 @@ PC: Intel USB 3.1 호스트 컨트롤러, 애널라이저는 루트 허브 2번 
 통과한 회는 앞과 같이 2.091 s, 대기열은 계속 0%였다. 같은 포트에서 libsigrok도 비슷하게 끊기므로
 Rust 드라이버 문제가 아니라 USB 쪽 문제다. **`usb/1-8`에서도 24 MHz 5회 연속은 될 때도 있고 안 될 때도 있어,
 NFR-1을 늘 만족한다고 볼 수 없다.** 12 MHz까지는 늘 통과했다.
+
+애널라이저를 다시 연결한 뒤(펌웨어가 없는 상태로 나타남) 같은 포트에서 (2026-11-11, 아래 "세 번째 시험"):
+
+| 시험 | 24 MHz × 50 M 샘플 결과 |
+| --- | --- |
+| `lvcli bench --rate 24M --samples 50M --runs 5` 두 번 | **두 번 모두 5회 통과**: 2.091~2.092 s, 대기열 0%, 마무리 19~40 ms |
+
+다시 연결하기 전에는 끊기고 다시 연결한 뒤에는 통과했다. 24 MHz가 끊기는지는 코드보다 그때의 USB 연결 상태에 달린 것으로 보인다.
 
 ### 저장 (NFR-2)
 
@@ -292,8 +301,9 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 
 남은 것:
 
-- 펌웨어 업로드 경로(`firmware\`)는 시험 때 장치에 이미 펌웨어가 올라가 있어 확인하지 못했다.
-  애널라이저를 뽑았다 꽂은 뒤 패키지의 `lvcli devices`(펌웨어 "없음")와 `lvcli capture`로 확인한다.
+- ~~펌웨어 업로드 경로(`firmware\`)는 시험 때 장치에 이미 펌웨어가 올라가 있어 확인하지 못했다.
+  애널라이저를 뽑았다 꽂은 뒤 패키지의 `lvcli devices`(펌웨어 "없음")와 `lvcli capture`로 확인한다.~~
+  2026-11-11에 확인했다 (아래 "세 번째 시험").
 - 다른 PC에서 실제로 풀어 보는 시험은 아직 하지 않았다.
 
 ## 다시 빌드·시험 (2026-11-11)
@@ -328,6 +338,23 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 | `scripts\test-package.ps1 -Hardware` (위에서 만든 zip) | 7개 모두 통과 |
 
 24 MHz 5회 연속 외에는 앞의 결과와 같다.
+
+## 세 번째 시험 (2026-11-11, 다시 연결한 뒤)
+
+코드 변경 없이(`ba99e51`) 같은 PC, 같은 포트 `usb/1-8`. 애널라이저가 다시 연결되어 `lvcli devices`가
+펌웨어를 "없음 (열 때 올림)"으로 보였다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release` | 성공 (바뀐 것 없음) |
+| `cargo test --release --workspace` | 42개 모두 통과 |
+| 펌웨어 업로드: 패키지 zip을 풀어 그 안의 `lvcli capture -r 1M -s 1M` (PATH는 Windows 시스템 폴더만, `LOGICVIEW_FIRMWARE_DIR` 없음) | **통과**: `firmware\fx2lafw-saleae-logic.fw`(8,120 B)를 올리고 fx2lafw 1.4로 열기까지 2,568 ms. 1.004 s, 전송 98건. 그 뒤 `lvcli devices`는 "fx2lafw 올라감" |
+| `lvcli bench --rate 24M --samples 50M --runs 5` 두 번 | **5/5, 5/5** (위 NFR-1) |
+| `lvcli bench --rate 12M --samples 50M --runs 3` | 3회 모두 통과 |
+| `mcp/tests/test_mcp.py --sigrok-cli <릴리스 앱>\sigrok-cli.exe --server target\release\logicview.exe --hardware` | 44개 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` | 7개 모두 통과 |
+
+모든 시험이 통과했다. 패키지의 펌웨어 업로드 경로는 이번에 처음 확인했다.
 
 ## PRD와 다르게 한 것
 

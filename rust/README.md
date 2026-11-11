@@ -1,6 +1,6 @@
 # logicview Rust 버전
 
-[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. M5까지 마쳤다 (M0의 NFR-1, 24 MHz를 본체 포트에서 5회 연속은 시험 PC의 포트 사정으로 남음).
+[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. M5까지 마쳤다. M0의 NFR-1(24 MHz를 본체 포트에서 5회 연속)은 2026-11-11에 본체 포트 `usb/1-8`에서 통과했다.
 기존 SLogicView 기반 빌드(저장소 루트)와 따로 빌드한다.
 
 ## 구성
@@ -85,6 +85,14 @@ PC: Intel USB 3.1 호스트 컨트롤러, 애널라이저는 루트 허브 2번 
 
 허브 두 단 경유(`usb/2-3.3.4`, 루트 포트 3 → 허브 → 허브 포트 4): 24 MHz 5회 모두 실패(1.4~9.8 M 샘플에서 멈춤),
 16 MHz × 50 M 샘플은 3회 모두 통과(3.134 s).
+
+본체 포트 `usb/1-8`(허브 없음)에서 재시험 (2026-11-11):
+
+| 시험 | 24 MHz × 50 M 샘플 결과 |
+| --- | --- |
+| `lvcli bench --rate 24M --samples 50M --runs 5` | **5회 모두 통과**: 2.091 s(실효 23.91 MHz), 대기열 0%, 마무리 14~20 ms |
+
+**NFR-1은 본체 포트 `usb/1-8`에서 통과했다.**
 
 ### 저장 (NFR-2)
 
@@ -274,6 +282,23 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 - 펌웨어 업로드 경로(`firmware\`)는 시험 때 장치에 이미 펌웨어가 올라가 있어 확인하지 못했다.
   애널라이저를 뽑았다 꽂은 뒤 패키지의 `lvcli devices`(펌웨어 "없음")와 `lvcli capture`로 확인한다.
 - 다른 PC에서 실제로 풀어 보는 시험은 아직 하지 않았다.
+
+## 다시 빌드·시험 (2026-11-11)
+
+저장소를 새로 받아 위 절차대로 다시 빌드하고 시험했다. Rust 1.98.1 (`stable-x86_64-pc-windows-msvc`).
+디코더 런타임은 릴리스 `v2.3.3-fx2lafw` zip(2026-11-09 빌드)과 같은 앱 폴더. 애널라이저는 본체 포트 `usb/1-8`.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release` | 성공 |
+| `cargo test --workspace` (`LOGICVIEW_SIGROK_DIR` 지정) | 42개 모두 통과 (libsigrokdecode 런타임 시험 포함) |
+| `lvcli bench --rate 24M --samples 50M --runs 5` | 5회 모두 통과 (위 NFR-1) |
+| `mcp/tests/test_mcp.py --server target\release\logicview.exe --hardware` | 44개 모두 통과 (`query_frames` 2개 포함) |
+| `scripts\package.ps1` | `logicview-0.1.1-windows-x64.zip`: 954개 파일, 풀면 56.3 MB, zip 22.3 MB |
+| `scripts\test-package.ps1 -Hardware` | 7개 모두 통과 (디코더 불러오기, uart·can 디코딩, `.sr` 불러오기·CSV, 장치 찾기, 1 MHz 수집, MCP 시험) |
+| 패키지의 `logicview.exe`를 Windows 시스템 폴더만 있는 PATH로 실행 | 창이 뜸 |
+
+펌웨어 업로드 경로(`firmware\`)는 이번에도 장치에 펌웨어가 이미 올라가 있어 확인하지 못했다.
 
 ## PRD와 다르게 한 것
 

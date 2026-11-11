@@ -241,8 +241,8 @@ lvcli decode cap.lvcap -P i2c:scl=SCL:sda=SDA,eeprom24xx --save --label EEPROM
 | 앱: `test.sr` 열기 → D0 이름 RX → 디코더… → uart → 디코딩 (UI Automation) | RX가 D0에 저절로 배정, 77 프레임 저장, 주석 행 2개와 표 표시, 검색 "rx-data" 63 프레임 |
 | `cargo test` | 런타임이 있으면 libsigrokdecode로 UART 디코딩과 오류 문장까지 시험, 없으면 건너뜀 |
 
-아직 하지 않은 것: 표에서 줄 클릭으로 이동(마우스 자동화가 안 되어 직접 확인 필요), 디코더 옵션 프리셋 저장,
-배포 zip에 디코더 런타임 넣기(M5).
+아직 하지 않은 것: 표에서 줄 클릭으로 이동(마우스 자동화가 안 되어 직접 확인 필요), 디코더 옵션 프리셋 저장.
+배포 zip에 디코더 런타임 넣기는 M5에서 했다 (아래 "M5 배포"의 `sigrok\`).
 
 ## M4 MCP (2026-11-10)
 
@@ -330,6 +330,7 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 | 패키지의 `logicview.exe`를 Windows 시스템 폴더만 있는 PATH로 실행 | 창이 뜸 |
 
 펌웨어 업로드 경로(`firmware\`)는 이번에도 장치에 펌웨어가 이미 올라가 있어 확인하지 못했다.
+이 경로는 나중에 확인했다 (아래 "세 번째 시험").
 
 ## 다시 시험 (2026-11-11, 같은 날 두 번째)
 

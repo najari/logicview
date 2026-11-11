@@ -1,6 +1,7 @@
 # logicview Rust 버전
 
-[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. M5까지 마쳤다. M0의 NFR-1(24 MHz를 본체 포트에서 5회 연속)은 2026-11-11에 본체 포트 `usb/1-8`에서 통과했다.
+[개발지시서(PRD)](../docs/prd-rust-logicview.md)에 따라 만드는 Rust + egui 버전. M5까지 마쳤다. M0의 NFR-1(24 MHz를 본체 포트에서 5회 연속)은 2026-11-11에 본체 포트 `usb/1-8`에서 한 번 통과했지만,
+같은 날 다시 돌리면 5회 중 2~4회만 통과해 늘 만족하지는 않는다 (같은 포트에서 sigrok-cli도 같이 끊김).
 기존 SLogicView 기반 빌드(저장소 루트)와 따로 빌드한다.
 
 ## 구성
@@ -93,6 +94,18 @@ PC: Intel USB 3.1 호스트 컨트롤러, 애널라이저는 루트 허브 2번 
 | `lvcli bench --rate 24M --samples 50M --runs 5` | **5회 모두 통과**: 2.091 s(실효 23.91 MHz), 대기열 0%, 마무리 14~20 ms |
 
 **NFR-1은 본체 포트 `usb/1-8`에서 통과했다.**
+
+같은 날 같은 포트에서 다시 시험 (2026-11-11, 아래 "다시 시험"):
+
+| 시험 | 결과 |
+| --- | --- |
+| `lvcli bench --rate 24M --samples 50M --runs 5` 세 번 | 5회 중 4회, 2회, 4회 통과. 실패한 회는 0.24~26.2 M 샘플에서 "장치 버퍼가 넘쳐 데이터가 끊김", 대기열 0% |
+| sigrok-cli (릴리스 앱 폴더) 24 MHz × 50 M 샘플 5회 | 3회 통과. 2회는 "Device only sent 16456192 samples", "… 33848320 samples" |
+| `lvcli bench --rate 12M --samples 50M --runs 3` | 3회 모두 통과 (4.171 s) |
+
+통과한 회는 앞과 같이 2.091 s, 대기열은 계속 0%였다. 같은 포트에서 libsigrok도 비슷하게 끊기므로
+Rust 드라이버 문제가 아니라 USB 쪽 문제다. **`usb/1-8`에서도 24 MHz 5회 연속은 될 때도 있고 안 될 때도 있어,
+NFR-1을 늘 만족한다고 볼 수 없다.** 12 MHz까지는 늘 통과했다.
 
 ### 저장 (NFR-2)
 
@@ -299,6 +312,22 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 | 패키지의 `logicview.exe`를 Windows 시스템 폴더만 있는 PATH로 실행 | 창이 뜸 |
 
 펌웨어 업로드 경로(`firmware\`)는 이번에도 장치에 펌웨어가 이미 올라가 있어 확인하지 못했다.
+
+## 다시 시험 (2026-11-11, 같은 날 두 번째)
+
+코드 변경 없이(`1f77772`) 같은 PC, 같은 포트 `usb/1-8`에서 다시 돌렸다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release` | 성공 (바뀐 것 없음) |
+| `cargo test --release --workspace` | 42개 모두 통과 |
+| `lvcli devices` | `usb/1-8`, `0925:3881`, fx2lafw 올라감 |
+| `lvcli bench --rate 24M --samples 50M --runs 5` 세 번 | **4/5, 2/5, 4/5** (위 NFR-1) |
+| `lvcli bench --rate 12M --samples 50M --runs 3` | 3회 모두 통과 |
+| `mcp/tests/test_mcp.py --sigrok-cli <릴리스 앱>\sigrok-cli.exe --server target\release\logicview.exe --hardware` | 44개 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` (위에서 만든 zip) | 7개 모두 통과 |
+
+24 MHz 5회 연속 외에는 앞의 결과와 같다.
 
 ## PRD와 다르게 한 것
 

@@ -433,6 +433,21 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 | `mcp/tests/test_mcp.py --hardware` (Rust 서버 / Python 서버) | 44개 / 42개 모두 통과 |
 | `scripts\package.ps1`, `scripts\test-package.ps1 -Hardware` | 956개 파일, 풀면 56.4 MB, zip 22.3 MB. 7개 모두 통과 |
 
+## 0.1.2 빌드·시험 (2026-11-12)
+
+버전을 0.1.2로 올린 커밋(`f6df440`, 태그 `rust-v0.1.2`)을 같은 PC, 같은 포트 `usb/1-8`에서 시험했다.
+펌웨어는 올라가 있었다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release` | 성공 |
+| `cargo test --release --workspace` | 49개 모두 통과 |
+| `lvcli bench --rate 24M --samples 50M --runs 5` 두 번 | **5/5, 5/5**. 2.091~2.092 s, 대기열 0%, 마무리 17~23 ms |
+| `lvcli bench --rate 12M --samples 50M --runs 3` | 3회 모두 통과 |
+| `mcp/tests/test_mcp.py --sigrok-cli <릴리스 앱>\sigrok-cli.exe --server target\release\logicview.exe --hardware` | 44개 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` (`logicview-0.1.2-windows-x64.zip`) | 7개 모두 통과 |
+| `extensions\tests\run-tests.ps1` (HLA 브리지) | 60개 모두 통과 |
+
 ## PRD와 다르게 한 것
 
 - `app.db`에는 PRD의 `setting(key, value)`와 디코더 프리셋 표 `decoder_preset(name, stack)`을 둔다. HLA용 Python

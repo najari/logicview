@@ -282,8 +282,8 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 ## M5 배포 (2026-11-10)
 
 ```powershell
-.\scripts\package.ps1 -RuntimeDir C:\...\SLogicView-2.3.3-fx2lafw     # dist\logicview-0.1.1-windows-x64.zip
-.\scripts\test-package.ps1 -Zip dist\logicview-0.1.1-windows-x64.zip -Python <python.exe> [-Hardware]
+.\scripts\package.ps1 -RuntimeDir C:\...\SLogicView-2.3.3-fx2lafw     # dist\logicview-0.1.2-windows-x64.zip
+.\scripts\test-package.ps1 -Zip dist\logicview-0.1.2-windows-x64.zip -Python <python.exe> [-Hardware]
 ```
 
 - zip에는 다음이 들어 있다 (954개 파일, 풀면 56 MB, zip 22 MB).

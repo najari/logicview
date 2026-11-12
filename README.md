@@ -9,17 +9,17 @@ SLogic 릴리스는 libsigrok를 `--disable-all-drivers --enable-sipeed-slogic-a
 fx2lafw 드라이버까지 포함해 다시 빌드하고, 릴리스의 `libsigrok-4.dll`만 교체한다.
 Windows 기본 libusb에서 fx2lafw가 제대로 동작하도록 패치 3개를 함께 적용한다.
 
-## Rust 버전 (logicview 0.1.1)
+## Rust 버전 (logicview 0.1.2)
 
 `rust/`는 SLogicView + 패치한 libsigrok + Python MCP 서버 구성을 실행 파일 하나로 바꾼 새 버전이다
 (libsigrok 없이 USB를 직접 다루고, 디코더만 libsigrokdecode를 실행 중에 읽어 쓴다).
-배포 zip(`logicview-0.1.1-windows-x64.zip`, 22 MB)은 압축만 풀면 쓴다. 설치 프로그램, Python,
+배포 zip(`logicview-0.1.2-windows-x64.zip`, 22 MB)은 압축만 풀면 쓴다. 설치 프로그램, Python,
 sigrok-cli, VC++ 재배포 패키지가 필요 없다.
 
 ```powershell
 cd rust
 .\scripts\package.ps1 -RuntimeDir <SLogicView 앱 폴더>          # dist\logicview-<버전>-windows-x64.zip
-.\scripts\test-package.ps1 -Zip dist\logicview-0.1.1-windows-x64.zip -Python <python.exe> -Hardware
+.\scripts\test-package.ps1 -Zip dist\logicview-0.1.2-windows-x64.zip -Python <python.exe> -Hardware
 ```
 
 사용법은 zip 안의 `README.txt`(원본 `rust/packaging/README.txt`), 개발 기록은 [rust/README.md](rust/README.md).
@@ -47,7 +47,7 @@ cd rust
 | `mcp/logicview_mcp.py` | Saleae Logic 2 MCP 서버와 같은 도구를 제공하는 MCP 서버 ([아래](#mcp-서버)) |
 | `mcp/start-mcp.cmd` | 앱 폴더에서 MCP 서버 실행 |
 | `mcp/tests/test_mcp.py` | MCP 서버 종단 테스트 (HTTP로 모든 도구 호출, `--hardware`로 실제 캡처) |
-| `rust/` | Rust + egui로 새로 만든 버전: 수집·파형·디코딩·HLA·MCP를 실행 파일 하나로 ([아래](#rust-버전-logicview-010), [rust/README.md](rust/README.md), [PRD](docs/prd-rust-logicview.md)) |
+| `rust/` | Rust + egui로 새로 만든 버전: 수집·파형·디코딩·HLA·MCP를 실행 파일 하나로 ([아래](#rust-버전-logicview-012), [rust/README.md](rust/README.md), [PRD](docs/prd-rust-logicview.md)) |
 | `docs/` | [Rust·egui 전환 검토](docs/rust-egui-review.md), [개발지시서(PRD)](docs/prd-rust-logicview.md) |
 
 ## 준비물

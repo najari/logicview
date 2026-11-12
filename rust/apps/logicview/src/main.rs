@@ -9,8 +9,9 @@
 //!   [--data-dir D] [--sigrok-dir D | --sigrok-cli D\sigrok-cli.exe] [--hla-script P]
 //! logicview --bench file.lvcap    scripted zoom/pan, print frame times, exit
 //! logicview --view 1000,0.5 f     start at sample 1000, 0.5 samples per point
-//! logicview --rate 1M --samples manual --trigger 0=f
-//!                                 preset the capture toolbar
+//! logicview --rate 1M --time 0.5 --trigger 0=f
+//!                                 preset the capture toolbar (--time <seconds | manual>;
+//!                                 --samples <count | manual> sets the length in samples)
 //! ```
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -67,6 +68,15 @@ fn main() -> eframe::Result {
             }
         } else if a == "--rate" {
             preset.rate = value().and_then(|v| lv_store::sigrok::parse_rate(&v));
+        } else if a == "--time" {
+            // Capture length in seconds ("0.5", "2s") or "manual".
+            preset.duration = value().and_then(|v| {
+                if v.eq_ignore_ascii_case("manual") {
+                    return Some(None);
+                }
+                let s: f64 = v.trim_end_matches(['s', 'S']).trim().parse().ok()?;
+                (s.is_finite() && s > 0.0).then_some(Some(s))
+            });
         } else if a == "--samples" {
             preset.samples = value().map(|v| {
                 if v.eq_ignore_ascii_case("manual") {

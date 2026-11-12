@@ -49,7 +49,7 @@ lvcli export cap.lvcap -f raw                            # cap.bin (샘플마다
 lvcli import other.sr                                    # other.lvcap
 lvcli synth --samples 50M -o synth.lvcap                 # 화면 시험용 합성 캡처
 logicview cap.lvcap                                      # .sr도 열림 (임시 폴더에 .lvcap으로 바꿔 엶)
-logicview --rate 1M --samples manual --trigger 0=f       # 수집 도구 막대 미리 설정
+logicview --rate 1M --time 0.5 --trigger 0=f             # 수집 도구 막대 미리 설정 (--time 초 | manual)
 logicview --bench synth.lvcap                            # 줌·이동을 자동으로 하고 프레임 시간 출력
 ```
 
@@ -172,7 +172,8 @@ NFR-1을 늘 만족한다고 볼 수 없다.** 12 MHz까지는 늘 통과했다.
 
 앱 사용법:
 
-- 위 줄: 장치, 샘플레이트, 샘플 수(또는 수동 중지), 트리거, **시작/중지**. 장치 목록은 2초마다 백그라운드에서 다시 찾는다.
+- 위 줄: 장치, 샘플레이트, 시간(0.1~60초 또는 수동 중지), 트리거, **시작/중지**. 장치 목록은 2초마다 백그라운드에서 다시 찾는다.
+  샘플 수는 샘플레이트 × 시간이며, 시간 선택 칸에 마우스를 올리면 보인다.
   수집 파일은 `%LOCALAPPDATA%\logicview\captures\capture-<UTC 시각>.lvcap`에 바로 쓰인다.
 - 수집 중에는 파형이 0.1초마다 늘어난다(UI-8). 저장 스레드가 0.25초마다 트랜잭션을 커밋하고, 덜 찬 덩어리도
   써 둔다(나중에 꽉 찬 덩어리로 바꿔 씀). 확대·이동하면 따라가기를 멈추고, "전체 보기"로 다시 따라간다.
@@ -282,8 +283,8 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 ## M5 배포 (2026-11-10)
 
 ```powershell
-.\scripts\package.ps1 -RuntimeDir C:\...\SLogicView-2.3.3-fx2lafw     # dist\logicview-0.1.2-windows-x64.zip
-.\scripts\test-package.ps1 -Zip dist\logicview-0.1.2-windows-x64.zip -Python <python.exe> [-Hardware]
+.\scripts\package.ps1 -RuntimeDir C:\...\SLogicView-2.3.3-fx2lafw     # dist\logicview-0.1.3-windows-x64.zip
+.\scripts\test-package.ps1 -Zip dist\logicview-0.1.3-windows-x64.zip -Python <python.exe> [-Hardware]
 ```
 
 - zip에는 다음이 들어 있다 (954개 파일, 풀면 56 MB, zip 22 MB).
@@ -407,9 +408,9 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 
 ## 디코더 프리셋, 마지막 설정 (2026-11-12)
 
-- 마지막 설정(UI-10): 샘플레이트, 샘플 수(수동 중지 포함), 채널 이름·보이기, 트리거 문자열, 트리거 앞 구간 비율을
+- 마지막 설정(UI-10): 샘플레이트, 수집 시간(수동 중지 포함; 0.1.2까지는 샘플 수), 채널 이름·보이기, 트리거 문자열, 트리거 앞 구간 비율을
   `%LOCALAPPDATA%\logicview\app.db`의 `setting(key, value)`에 둔다. 값이 바뀐 프레임에서, 글자를 고치는 칸에
-  포커스가 없으면 바로 쓰고, 끝낼 때도 한 번 쓴다. 시작할 때 읽은 뒤 명령줄 `--rate`·`--samples`·`--trigger`를
+  포커스가 없으면 바로 쓰고, 끝낼 때도 한 번 쓴다. 시작할 때 읽은 뒤 명령줄 `--rate`·`--time`(또는 `--samples`)·`--trigger`를
   덮어쓰며, 명령줄 값만으로는 저장하지 않는다. 잘못된 값(지원하지 않는 샘플레이트, 개수가 다른 채널 목록 등)은
   무시한다. 트리거 켜기는 기억하지 않는다 (다음 수집이 트리거를 기다리며 멈춘 것처럼 보이지 않게).
 - 디코더 프리셋: 디코더 창 맨 위 "프리셋" 줄에서 지금 스택(디코더 id, 첫 디코더의 채널, 기본값과 다른 옵션, 이름)을
@@ -450,6 +451,9 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 
 ## PRD와 다르게 한 것
 
+- UI-1: 도구 막대는 샘플 수 대신 수집 시간(초)을 고른다 (0.1, 0.5, 1, 2, 5, 10, 30, 60초, 수동 중지; 2026-11-13).
+  샘플 수는 시작할 때 샘플레이트 × 시간으로 정한다. `app.db`의 키는 `capture.duration`(초 또는 `manual`)이고,
+  0.1.2가 쓴 `capture.samples`만 있으면 기억한 샘플레이트로 나눠 시간으로 읽는다. `lvcli`와 MCP는 그대로 샘플 수·시간을 받는다.
 - `app.db`에는 PRD의 `setting(key, value)`와 디코더 프리셋 표 `decoder_preset(name, stack)`을 둔다. HLA용 Python
   패키지 목록(PRD의 `hla_package`)은 앱이 아니라 `extensions\hla.ps1`이 다루므로
   `%LOCALAPPDATA%\libsigrokdecode\saleae_compat\packages.json`에 둔다 (SLogicView와 함께 쓴다).

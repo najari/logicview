@@ -113,12 +113,15 @@ impl AppDb {
     }
 }
 
+/// Longest remembered capture length (seconds); anything longer is ignored.
+const MAX_DURATION: f64 = 3600.0;
+
 /// The capture settings the app remembers between runs (UI-10).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Remembered {
     pub rate: u64,
-    /// `None` = until stopped.
-    pub samples: Option<u64>,
+    /// Capture length in seconds; `None` = until stopped.
+    pub duration: Option<f64>,
     pub names: Vec<String>,
     pub shown: Vec<bool>,
     pub trigger_text: String,
@@ -134,13 +137,24 @@ impl Remembered {
         {
             r.rate = v;
         }
-        match db.get("capture.samples").as_deref() {
-            Some("manual") => r.samples = None,
+        // The length in seconds; 0.1.2 kept a sample count instead, which is
+        // read as a length at the remembered rate.
+        let length = match db.get("capture.duration") {
+            Some(v) => Some(v),
+            None => db.get("capture.samples").map(|v| {
+                v.parse::<u64>()
+                    .map_or(v, |n| (n as f64 / r.rate as f64).to_string())
+            }),
+        };
+        match length.as_deref() {
+            Some("manual") => r.duration = None,
             Some(v) => {
-                if let Ok(n) = v.parse::<u64>()
-                    && n > 0
+                if let Ok(s) = v.parse::<f64>()
+                    && s.is_finite()
+                    && s > 0.0
+                    && s <= MAX_DURATION
                 {
-                    r.samples = Some(n);
+                    r.duration = Some(s);
                 }
             }
             None => {}
@@ -174,8 +188,8 @@ impl Remembered {
         db.set_all(&[
             ("capture.rate", self.rate.to_string()),
             (
-                "capture.samples",
-                self.samples.map_or("manual".into(), |n| n.to_string()),
+                "capture.duration",
+                self.duration.map_or("manual".into(), |s| s.to_string()),
             ),
             (
                 "channels.names",
@@ -203,7 +217,7 @@ mod tests {
     fn defaults() -> Remembered {
         Remembered {
             rate: 16_000_000,
-            samples: Some(10_000_000),
+            duration: Some(1.0),
             names: (0..8).map(|i| format!("D{i}")).collect(),
             shown: vec![true; 8],
             trigger_text: "0=f".into(),
@@ -229,7 +243,7 @@ mod tests {
         );
         let mut r = defaults();
         r.rate = 1_000_000;
-        r.samples = None;
+        r.duration = None;
         r.names[0] = "TX".into();
         r.names[3] = "한글".into();
         r.shown[7] = false;
@@ -239,9 +253,29 @@ mod tests {
         drop(db);
         let db = AppDb::open(&path).expect("reopen");
         assert_eq!(Remembered::load(&db, defaults()), r);
-        r.samples = Some(50_000_000);
+        r.duration = Some(0.1);
         r.save(&db).expect("save again");
-        assert_eq!(Remembered::load(&db, defaults()).samples, Some(50_000_000));
+        assert_eq!(Remembered::load(&db, defaults()).duration, Some(0.1));
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn ui10_sample_count_of_0_1_2_becomes_a_length() {
+        let (path, db) = temp_db("old-samples");
+        db.set_all(&[
+            ("capture.rate", "4000000".into()),
+            ("capture.samples", "2000000".into()),
+        ])
+        .expect("set");
+        assert_eq!(Remembered::load(&db, defaults()).duration, Some(0.5));
+        db.set_all(&[("capture.samples", "manual".into())])
+            .expect("set");
+        assert_eq!(Remembered::load(&db, defaults()).duration, None);
+        // A length, once saved, wins over the old count.
+        db.set_all(&[("capture.duration", "2".into())])
+            .expect("set");
+        assert_eq!(Remembered::load(&db, defaults()).duration, Some(2.0));
         drop(db);
         let _ = std::fs::remove_file(path);
     }
@@ -251,7 +285,7 @@ mod tests {
         let (path, db) = temp_db("bad");
         db.set_all(&[
             ("capture.rate", "12345".into()),
-            ("capture.samples", "lots".into()),
+            ("capture.duration", "lots".into()),
             ("channels.names", "[\"only one\"]".into()),
             ("channels.shown", "not json".into()),
             ("trigger.pre_percent", "300".into()),

@@ -40,14 +40,16 @@ const LABEL_W: f32 = 140.0;
 const RULER_H: f32 = 26.0;
 /// Most zoomed in: 64 points per sample.
 const MIN_SPP: f64 = 1.0 / 64.0;
-/// Sample counts offered in the toolbar; `None` = until stopped.
-const SAMPLE_CHOICES: [Option<u64>; 7] = [
-    Some(100_000),
-    Some(1_000_000),
-    Some(10_000_000),
-    Some(50_000_000),
-    Some(100_000_000),
-    Some(500_000_000),
+/// Capture lengths in seconds offered in the toolbar; `None` = until stopped.
+const DURATION_CHOICES: [Option<f64>; 9] = [
+    Some(0.1),
+    Some(0.5),
+    Some(1.0),
+    Some(2.0),
+    Some(5.0),
+    Some(10.0),
+    Some(30.0),
+    Some(60.0),
     None,
 ];
 /// How often the live view re-reads the file (UI-8).
@@ -83,7 +85,8 @@ pub struct App {
     scan_rx: Option<std::sync::mpsc::Receiver<Vec<FoundDevice>>>,
     slot: DeviceSlot,
     rate: u64,
-    samples: Option<u64>,
+    /// Capture length in seconds; `None` = until stopped.
+    duration: Option<f64>,
     trigger_on: bool,
     trigger_text: String,
     pre_percent: u8,
@@ -142,7 +145,9 @@ pub fn setup_fonts(ctx: &egui::Context) {
 #[derive(Default)]
 pub struct Preset {
     pub rate: Option<u64>,
-    /// `Some(None)` = manual stop.
+    /// Capture length in seconds; `Some(None)` = manual stop.
+    pub duration: Option<Option<f64>>,
+    /// Sample count (`--samples`), turned into a length at the final rate.
     pub samples: Option<Option<u64>>,
     pub trigger: Option<String>,
     /// Marker A and B (samples).
@@ -185,7 +190,7 @@ impl App {
             scan_rx: None,
             slot: Arc::new(Mutex::new(None)),
             rate: 16_000_000,
-            samples: Some(10_000_000),
+            duration: Some(1.0),
             trigger_on: false,
             trigger_text: "0=f".into(),
             pre_percent: 10,
@@ -206,7 +211,7 @@ impl App {
             db: AppDb::open_default(),
             saved: Remembered {
                 rate: 0,
-                samples: None,
+                duration: None,
                 names: Vec::new(),
                 shown: Vec::new(),
                 trigger_text: String::new(),
@@ -221,8 +226,10 @@ impl App {
         if let Some(r) = preset.rate.filter(|r| SAMPLERATES.contains(r)) {
             app.rate = r;
         }
-        if let Some(n) = preset.samples {
-            app.samples = n;
+        if let Some(d) = preset.duration {
+            app.duration = d;
+        } else if let Some(n) = preset.samples {
+            app.duration = n.map(|n| n as f64 / app.rate as f64);
         }
         if let Some(t) = preset.trigger {
             app.trigger_on = true;
@@ -247,7 +254,7 @@ impl App {
     fn remembered(&self) -> Remembered {
         Remembered {
             rate: self.rate,
-            samples: self.samples,
+            duration: self.duration,
             names: self.names.clone(),
             shown: self.shown.clone(),
             trigger_text: self.trigger_text.clone(),
@@ -257,7 +264,7 @@ impl App {
 
     fn apply(&mut self, r: &Remembered) {
         self.rate = r.rate;
-        self.samples = r.samples;
+        self.duration = r.duration;
         self.names = r.names.clone();
         self.shown = r.shown.clone();
         self.trigger_text = r.trigger_text.clone();
@@ -496,7 +503,8 @@ impl App {
                 return;
             }
         };
-        let mut req = CaptureRequest::new(self.rate, self.samples, path);
+        let limit = self.duration.map(|s| samples_for(self.rate, s));
+        let mut req = CaptureRequest::new(self.rate, limit, path);
         req.channel_names = self.names.clone();
         req.trigger = trigger;
         self.message = None;
@@ -758,14 +766,24 @@ impl App {
                             ui.selectable_value(&mut self.rate, r, fmt_rate(r));
                         }
                     });
-                ui.label("샘플 수");
-                egui::ComboBox::from_id_salt("samples")
-                    .selected_text(fmt_limit(self.samples))
+                ui.label("시간");
+                egui::ComboBox::from_id_salt("duration")
+                    .selected_text(fmt_duration(self.duration))
                     .width(80.0)
                     .show_ui(ui, |ui| {
-                        for &n in &SAMPLE_CHOICES {
-                            ui.selectable_value(&mut self.samples, n, fmt_limit(n));
+                        for &d in &DURATION_CHOICES {
+                            ui.selectable_value(&mut self.duration, d, fmt_duration(d));
                         }
+                    })
+                    .response
+                    .on_hover_text(match self.duration {
+                        Some(s) => format!(
+                            "{} 샘플 ({} × {}초)",
+                            fmt_count(samples_for(self.rate, s)),
+                            fmt_rate(self.rate),
+                            fmt_secs(s)
+                        ),
+                        None => "중지를 누를 때까지 수집".into(),
                     });
                 ui.separator();
                 ui.checkbox(&mut self.trigger_on, "트리거");
@@ -777,12 +795,12 @@ impl App {
                 )
                 .on_hover_text("채널=조건, 쉼표로 AND. r 상승, f 하강, e 에지, 1 High, 0 Low");
                 ui.add_enabled(
-                    self.trigger_on && self.samples.is_some(),
+                    self.trigger_on && self.duration.is_some(),
                     egui::DragValue::new(&mut self.pre_percent)
                         .range(0..=100)
                         .suffix("% 앞"),
                 )
-                .on_hover_text("트리거 앞 구간 비율 (샘플 수를 정했을 때)");
+                .on_hover_text("트리거 앞 구간 비율 (시간을 정했을 때)");
             });
             ui.separator();
             if busy {
@@ -1407,11 +1425,21 @@ pub fn fmt_rate(hz: u64) -> String {
     }
 }
 
-fn fmt_limit(n: Option<u64>) -> String {
-    match n {
+/// Samples in `secs` seconds at `rate` (at least one).
+fn samples_for(rate: u64, secs: f64) -> u64 {
+    ((rate as f64 * secs).round() as u64).max(1)
+}
+
+/// Seconds without trailing zeros: 0.1, 2, 0.000625.
+fn fmt_secs(secs: f64) -> String {
+    let s = format!("{secs:.6}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn fmt_duration(d: Option<f64>) -> String {
+    match d {
         None => "수동 중지".into(),
-        Some(n) if n >= 1_000_000 => format!("{} M", n / 1_000_000),
-        Some(n) => format!("{} k", n / 1_000),
+        Some(s) => format!("{} 초", fmt_secs(s)),
     }
 }
 
@@ -1485,9 +1513,15 @@ mod tests {
     }
 
     #[test]
-    fn ui1_limit_text() {
-        assert_eq!(fmt_limit(Some(100_000)), "100 k");
-        assert_eq!(fmt_limit(Some(50_000_000)), "50 M");
-        assert_eq!(fmt_limit(None), "수동 중지");
+    fn ui1_duration_text() {
+        assert_eq!(fmt_duration(Some(0.1)), "0.1 초");
+        assert_eq!(fmt_duration(Some(60.0)), "60 초");
+        assert_eq!(fmt_duration(Some(10_000.0 / 16e6)), "0.000625 초");
+        assert_eq!(fmt_duration(None), "수동 중지");
+        assert_eq!(samples_for(16_000_000, 0.1), 1_600_000);
+        assert_eq!(samples_for(24_000_000, 60.0), 1_440_000_000);
+        assert_eq!(samples_for(20_000, 1e-9), 1);
+        // --samples n gives back n samples at the same rate.
+        assert_eq!(samples_for(16_000_000, 10_000_000.0 / 16e6), 10_000_000);
     }
 }

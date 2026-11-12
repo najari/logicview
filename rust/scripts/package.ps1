@@ -83,6 +83,7 @@ New-Item -ItemType Directory $ext | Out-Null
 Copy-Item (Join-Path $repo 'extensions\hla.ps1') $ext
 Copy-Tree (Join-Path $repo 'extensions\compat') (Join-Path $ext 'compat') @('__pycache__')
 Copy-Tree (Join-Path $repo 'extensions\template') (Join-Path $ext 'template') @('__pycache__')
+Copy-Tree (Join-Path $repo 'extensions\decoders') (Join-Path $ext 'decoders') @('__pycache__')
 New-Item -ItemType Directory (Join-Path $stage 'tools') | Out-Null
 Copy-Item (Join-Path $repo 'tools\install-winusb.ps1') (Join-Path $stage 'tools')
 

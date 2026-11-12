@@ -37,10 +37,11 @@ cd rust
 | `tests/run-capture.ps1` | 앱 실행 → Run → 수집이 끝날 때까지 대기 → 스크린샷 → 로그에서 USB 전송 결과 요약 |
 | `tests/slv-set-24m.ps1`, `tests/pv-set-24m.ps1` | SLogicView / PulseView 툴바를 24 MHz, 50 M 샘플로 설정 (`run-capture.ps1 -PreRunScript`용) |
 | `tools/install-winusb.ps1` | Zadig 창을 조작해서 애널라이저에 WinUSB 드라이버 설치 |
-| `extensions/hla.ps1` | Saleae Logic 2 HLA 확장을 SLogicView 디코더로 설치·목록·삭제 ([아래](#saleae-logic-2-확장hla-사용)) |
+| `extensions/hla.ps1` | Saleae Logic 2 HLA 확장을 SLogicView 디코더로 설치·목록·삭제, HLA가 쓰는 Python 패키지 추가 ([아래](#saleae-logic-2-확장hla-사용)) |
 | `extensions/compat/` | Logic 2 확장 API 호환 계층: `saleae` 모듈(API 대체 구현) + `saleae_bridge.py`(sigrok 디코더 ↔ HLA 변환) |
 | `extensions/template/` | 확장마다 만들어지는 디코더 패키지의 `__init__.py`, `pd.py` |
-| `extensions/tests/` | 테스트 HLA 7개, 단위 테스트(`run-tests.ps1`), 합성 캡처·세션 생성기(`make-capture.py`) |
+| `extensions/decoders/manchester/` | Manchester·Bi-phase 디코더 (sigrok에 없어서, Manchester 입력 HLA용으로 함께 설치) |
+| `extensions/tests/` | 테스트 HLA 8개, numpy HLA(`hla-packages/`), 단위 테스트(`run-tests.ps1`), 합성 캡처·세션 생성기(`make-capture.py`, `make-capture-more.py`) |
 | `build-sigrok-cli.sh` | 같은 SLogic 커밋의 libsigrokdecode + sigrok-cli 빌드 (MCP 서버용, MSYS2 UCRT64) |
 | `sigrok-cli-patches/0001-windows-1ms-timer-resolution.patch` | sigrok-cli가 Windows 타이머 해상도를 1 ms로 올림. 기본 15.6 ms에서는 USB 이벤트 처리가 밀려 24 MHz 수집이 끊김 |
 | `mcp/logicview_mcp.py` | Saleae Logic 2 MCP 서버와 같은 도구를 제공하는 MCP 서버 ([아래](#mcp-서버)) |
@@ -147,8 +148,8 @@ USB 허브 없이 PC 본체 포트에 직접 꽂을 것 (허브 경유라면 16 
 Logic 2의 High Level Analyzer(HLA) 확장을 SLogicView에서 디코더로 쓸 수 있다.
 `extensions/hla.ps1`이 확장을 libsigrokdecode의 사용자 디코더 폴더
 (`%LOCALAPPDATA%\libsigrokdecode\decoders`)에 디코더로 등록하고, 호환 계층이
-sigrok 디코더(uart, i2c, spi, can)의 출력을 Logic 2 분석기와 같은 프레임으로 바꿔
-HLA에 넘긴다. HLA가 돌려준 프레임은 SLogicView 주석으로 표시된다. 앱 파일은 건드리지 않는다.
+sigrok 디코더(uart, i2c, spi, can, onewire_link, i2s, parallel)와 함께 설치하는 manchester
+디코더의 출력을 Logic 2 분석기와 같은 프레임으로 바꿔 HLA에 넘긴다. HLA가 돌려준 프레임은 SLogicView 주석으로 표시된다. 앱 파일은 건드리지 않는다.
 
 ```powershell
 # GitHub 저장소 주소, 확장 폴더(extension.json이 있는 곳), zip 파일 모두 가능
@@ -156,6 +157,7 @@ HLA에 넘긴다. HLA가 돌려준 프레임은 SLogicView 주석으로 표시�
 .\extensions\hla.ps1 install C:\work\my-hla -Protocol i2c   # 입력 프로토콜 직접 지정
 .\extensions\hla.ps1 list
 .\extensions\hla.ps1 remove "Text Messages"
+.\extensions\hla.ps1 package add numpy                     # HLA가 import하는 Python 패키지 (아래)
 ```
 
 설치 후 SLogicView를 다시 시작한다. 디코더 추가 창의 `Saleae HLA` 분류에서
@@ -168,10 +170,18 @@ UART 디코더에 쌓아도 된다. HLA 설정은 디코더 옵션으로 나온�
 | I2C | `i2c` | `start`, `address` (`address`, `read`, `ack`), `data` (`data`, `ack`), `stop` |
 | SPI | `spi` | `enable`, `result` (`mosi`, `miso`), `disable` |
 | CAN | `can` | `identifier_field`, `control_field`, `data_field`, `crc_field`, `ack_field` |
+| LIN | `uart` | `header_break`, `header_sync`, `header_pid` (`protected_id`), `data` (`data`, `index`), `checksum` (`checksum`) |
+| 1-Wire | `onewire_link` | `reset`, `presence`, `rom_command` (`rom_command`, `description`), `family_code`, `id`, `crc`, `data`, `invalid_rom_command`, `alarm` |
+| Manchester | `manchester` (함께 설치) | `data` (`data`) |
+| I2S / PCM | `i2s` | `data` (`channel`, `data`) |
+| Simple Parallel | `parallel` | `data` (`data`) |
+
+프레임 종류와 키는 Saleae의 [frame format reference](https://www.saleae.com/support/extensions-api/hla-frame-format-reference/analyzer-frame-types)를 따른다.
+`-Protocol`에 쓰는 이름은 `uart`, `i2c`, `spi`, `can`, `lin`, `onewire`, `manchester`, `i2s`, `parallel`이다.
 
 `-Protocol auto`(기본값)는 HLA 코드가 확인하는 프레임 종류와, 이름·설명·README·주석에
 나오는 분석기 이름으로 입력 프로토콜을 고른다. 여러 개면 프로토콜마다 디코더를 하나씩
-만든다(`hla_<확장>_<프로토콜>`).
+만든다(`hla_<확장>_<프로토콜>`). 아무 단서가 없으면 `uart`, `i2c`, `spi`, `can` 넷을 만든다.
 
 제한:
 - High Level Analyzer만 지원한다. Measurement 확장(DigitalMeasurement, AnalogMeasurement)은
@@ -182,16 +192,51 @@ UART 디코더에 쌓아도 된다. HLA 설정은 디코더 옵션으로 나온�
 - SPI는 CS 극성 옵션을 SPI 디코더와 같게 맞춰야 한다(기본 active-low).
 - CAN: sigrok can 디코더는 프레임을 한 번에 넘겨서, 필드 경계는 비트 수로 계산한다
   (스터프 비트 무시). `crc`는 디코딩한 필드로 계산한 값(클래식 CAN만)이고, `ack`는 항상 true.
-- LIN, 1-Wire, Manchester, I2S 등 그 밖의 Logic 2 분석기 입력은 아직 없다.
-- numpy 같은 외부 패키지를 쓰는 HLA는 앱 내장 Python(3.14)에 그 패키지가 없어서 동작하지 않는다.
+- LIN: uart 디코더의 보드레이트를 LIN 속도에 맞춘다(옵션 `UART line carrying LIN`으로 RX/TX 선택).
+  헤더 프레임은 바로 보내고, 응답 바이트는 트랜잭션이 끝날 때(다음 break, 두 프레임 시간의 idle,
+  또는 데이터 8개와 체크섬) 한꺼번에 보내며 마지막 바이트를 `checksum`으로 한다. 그래서
+  `data_or_checksum`은 보내지 않는다. `protected_id`는 문서대로 6비트 ID다.
+- 1-Wire: onewire_link가 리셋과 프레즌스를 한 번에 알려서 `reset`과 `presence`는 같은 구간이다.
+  Resume(0xA5)과 Overdrive Skip(0x3C)은 `skip`, Overdrive Match(0x69)는 `match`로 보낸다.
+- Manchester: sigrok에는 Manchester 디코더가 없어서 `extensions/decoders/manchester`를 함께 설치한다.
+  IEEE 802.3·G.E. Thomas Manchester, 차동 Manchester, Bi-phase Mark·Space와 비트레이트, 워드 비트 수,
+  비트 순서, 앞에서 건너뛸 비트 수를 옵션으로 고른다. 비트 경계는 버스트 안의 첫 "한 비트 길이"
+  간격으로 맞추고, 그런 간격이 없으면(예: 같은 비트만 계속) 첫 에지를 Manchester는 비트 중간,
+  Bi-phase는 비트 경계로 본다.
+- I2S / PCM: sigrok i2s는 원래 워드를 넘기므로, 부호는 옵션 `hla_i2s_format`
+  (`unsigned`, `signed-8`…`signed-32`)으로 정한다.
+- Async RGB LED(`pixel`)는 sigrok의 rgb_led_ws281x가 Python 출력을 내지 않아 아직 없다.
 - HLA의 `print()` 출력은 `%LOCALAPPDATA%\libsigrokdecode\saleae_compat\hla.log`에 쌓인다.
   환경 변수 `SALEAE_HLA_TRACE=1`로 앱을 실행하면 HLA가 낸 프레임도 기록된다.
+
+### HLA가 쓰는 Python 패키지
+
+앱 내장 Python은 MSYS2 UCRT64 빌드(3.14)라서, 컴파일된 확장 모듈은 ABI가 `cp314-mingw_x86_64_ucrt_gnu`인
+것만 불러온다. PyPI의 Windows wheel(`win_amd64`)은 쓸 수 없다. `hla.ps1 package`가 패키지를
+`%LOCALAPPDATA%\libsigrokdecode\saleae_compat\site-packages`에, 필요한 DLL을 `saleae_compat\bin`에 넣고,
+호환 계층이 두 곳을 `sys.path`와 DLL 검색 경로에 넣는다.
+
+```powershell
+.\extensions\hla.ps1 package add numpy                # MSYS2에 있으면 MSYS2에서 (기본 C:\msys64)
+.\extensions\hla.ps1 package add crc -From pypi       # 순수 Python wheel(py3-none-any)
+.\extensions\hla.ps1 package add numpy -Msys2 D:\msys64
+.\extensions\hla.ps1 package list
+.\extensions\hla.ps1 package remove numpy
+```
+
+- `-From auto`(기본값)는 MSYS2에 `mingw-w64-ucrt-x86_64-python-<이름>`이 있으면 그것을, 없으면 PyPI를 쓴다.
+- MSYS2에서 가져올 때는 그 MSYS2에 `pacman -S`로 설치한 뒤, 패키지와 의존 패키지(Python 자체 제외)의
+  `site-packages` 파일과 DLL을 복사한다. MSYS2의 Python 버전이 3.14가 아니면 거절한다.
+- PyPI에서는 순수 Python wheel만 받고, 환경 표시(`;`)가 없는 `Requires-Dist`도 따라 받는다.
+- 확장 폴더 안에 함께 든 순수 Python 모듈은 지금처럼 그대로 불러온다.
 
 ### 확장 테스트
 
 ```powershell
-# 테스트 HLA 7개를 임시 폴더에 설치하고 단위 테스트 실행 (MSYS2 Python 3.14 사용)
+# 테스트 HLA 8개를 임시 폴더에 설치하고 단위 테스트 실행 (MSYS2 Python 3.14 사용)
 .\extensions\tests\run-tests.ps1
+# LIN, 1-Wire, Manchester, I2S, Parallel 합성 캡처 (앱의 sigrok-cli나 lvcli decode로 확인)
+C:\msys64\ucrt64\bin\python.exe -I .\extensions\tests\make-capture-more.py more.sr
 # 실제 앱 확인: 테스트 HLA를 사용자 폴더에 설치 → 합성 캡처와 세션 생성 → 열기
 Get-ChildItem .\extensions\tests\hlas -Directory | ForEach-Object { .\extensions\hla.ps1 install $_.FullName }
 C:\msys64\ucrt64\bin\python.exe -I .\extensions\tests\make-capture.py test.sr test.pvs
@@ -201,6 +246,16 @@ $env:SALEAE_HLA_TRACE = 1; & <앱 폴더>\slogicview.exe -s test.pvs test.sr
 결과 (2026-11-08): 단위 테스트 22개 통과. SLogicView 2.3.3에서 합성 캡처(UART "Hi", "ok!",
 I2C 쓰기/읽기, SPI 3워드, CAN 표준·확장 프레임)를 테스트 HLA 5개가 기대한 대로 디코딩했고,
 HLA 예외는 오류 주석으로, 옛 API 확장은 불러오기 오류로만 처리되었다.
+
+결과 (2026-11-12, 입력 5개와 패키지 추가):
+
+| 시험 | 결과 |
+|---|---|
+| `run-tests.ps1` | 60개 통과 (새 입력 어댑터, manchester 디코더 4가지 방식·두 idle 레벨, 설치 감지 포함) |
+| 앱 폴더의 sigrok-cli(내장 Python 3.14.9)로 `make-capture-more.py` 캡처를 `frame-echo` HLA로 디코딩 | LIN `header_break` → `header_sync` → `header_pid` 18 → `data` 1, 2 → `checksum` 106. 1-Wire `reset`, `presence`, `rom_command` 0xCC `skip`, `data` 0x44. Manchester `data` 165, 60. I2S `signed-16`로 −1, 1, −32768, 32767, 0. Parallel 1, 0, 1, 1 |
+| 같은 캡처를 Rust `lvcli decode`(lv-decode)로 | 위와 같은 프레임 |
+| `package add numpy` (MSYS2 2.5.4, 930개 파일, DLL 7개) 뒤 `tests/hla-packages/numpy-mean` HLA를 앱의 sigrok-cli로 (PATH는 Windows 시스템 폴더만) | "Hi" 평균 88.5, "ok!" 평균 83.67. 패키지 없는 폴더에서는 `No module named 'numpy'` |
+| `package add crc` (PyPI 8.0.0) → `list` → `remove` | 지운 뒤 `site-packages`, `bin`에 남은 파일 없음 (`__pycache__` 포함). Windows PowerShell 5.1과 PowerShell 7 모두 |
 
 ## MCP 서버
 

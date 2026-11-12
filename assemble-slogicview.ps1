@@ -42,7 +42,7 @@ Copy-Item -Path (Join-Path $FirmwareDir 'fx2lafw-*.fw') -Destination $fw
 $ext = Join-Path $Destination 'extensions'
 New-Item -ItemType Directory -Force -Path $ext | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'extensions\hla.ps1') -Destination $ext
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'extensions\compat'), (Join-Path $PSScriptRoot 'extensions\template') -Destination $ext -Recurse
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'extensions\compat'), (Join-Path $PSScriptRoot 'extensions\template'), (Join-Path $PSScriptRoot 'extensions\decoders') -Destination $ext -Recurse
 
 if ($SigrokCli) {
     Copy-Item -LiteralPath $SigrokCli -Destination $Destination

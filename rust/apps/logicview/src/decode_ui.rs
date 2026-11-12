@@ -11,7 +11,9 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Painter, Rect, S
 use lv_decode::{Control, DecoderInfo, RowDesc, Settings, StackEntry};
 use lv_store::CaptureFile;
 use lv_store::analysis::{AnalyzerInfo, Frame};
+use serde_json::{Map, Value, json};
 
+use crate::settings::AppDb;
 use crate::wave::{self, View};
 
 pub const ANN_ROW_H: f32 = 22.0;
@@ -329,6 +331,84 @@ impl EntryForm {
             args,
         })
     }
+
+    /// This decoder's part of a preset: chosen channels and changed options.
+    fn preset_json(&self) -> Value {
+        let channels: Map<String, Value> = self
+            .channels
+            .iter()
+            .filter_map(|(id, _, _, ch)| ch.map(|i| (id.clone(), Value::from(i))))
+            .collect();
+        let options: Map<String, Value> = self
+            .options
+            .iter()
+            .filter(|o| o.value.trim() != o.default)
+            .map(|o| (o.id.clone(), Value::from(o.value.trim())))
+            .collect();
+        json!({"id": self.id, "channels": channels, "options": options})
+    }
+
+    /// Take channels and options from a preset; options the decoder no
+    /// longer has, or values it no longer offers, are skipped.
+    fn apply_preset(&mut self, v: &Value, channel_count: usize) {
+        let channels = v.get("channels").and_then(Value::as_object);
+        for (id, _, _, ch) in &mut self.channels {
+            *ch = channels
+                .and_then(|m| m.get(id.as_str()))
+                .and_then(Value::as_u64)
+                .map(|i| i as usize)
+                .filter(|&i| i < channel_count);
+        }
+        if let Some(opts) = v.get("options").and_then(Value::as_object) {
+            for o in &mut self.options {
+                if let Some(s) = opts.get(&o.id).and_then(Value::as_str)
+                    && (o.choices.is_empty() || o.choices.iter().any(|c| c == s))
+                {
+                    o.value = s.to_string();
+                }
+            }
+        }
+    }
+}
+
+/// A decoder stack with its channels, options and label, as stored in
+/// `app.db` (`decoder_preset.stack`).
+fn preset_json(entries: &[EntryForm], label: &str) -> String {
+    json!({
+        "label": label,
+        "decoders": entries.iter().map(EntryForm::preset_json).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
+fn entries_from_preset(
+    text: &str,
+    list: &[DecoderInfo],
+    names: &[String],
+) -> Result<(Vec<EntryForm>, String), String> {
+    let v: Value =
+        serde_json::from_str(text).map_err(|e| format!("프리셋을 읽을 수 없습니다: {e}"))?;
+    let decoders = v
+        .get("decoders")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+        .ok_or("프리셋에 디코더가 없습니다")?;
+    let mut entries = Vec::new();
+    for d in decoders {
+        let id = d.get("id").and_then(Value::as_str).unwrap_or_default();
+        let info = list.iter().find(|x| x.id == id).ok_or_else(|| {
+            format!("프리셋의 디코더 '{id}'이(가) 없습니다 (지운 HLA인지 확인하세요)")
+        })?;
+        let mut e = EntryForm::new(info, names);
+        e.apply_preset(d, names.len());
+        entries.push(e);
+    }
+    let label = v
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok((entries, label))
 }
 
 /// A decode running in the background (DEC-4).
@@ -357,6 +437,10 @@ pub struct DecodeUi {
     filter: String,
     pub job: Option<Job>,
     pub message: Option<String>,
+    /// Name typed or picked in the preset row.
+    preset_name: String,
+    /// Presets read from `app.db`; `None` = read again.
+    presets: Option<Vec<(String, String)>>,
 }
 
 impl Default for DecodeUi {
@@ -369,6 +453,8 @@ impl Default for DecodeUi {
             filter: String::new(),
             job: None,
             message: None,
+            preset_name: String::new(),
+            presets: None,
         }
     }
 }
@@ -442,6 +528,7 @@ impl DecodeUi {
         ctx: &egui::Context,
         file: Option<(&std::path::Path, &[String])>,
         recording: bool,
+        db: &AppDb,
     ) {
         if !self.open {
             return;
@@ -453,8 +540,86 @@ impl DecodeUi {
         egui::Window::new("디코더 추가")
             .open(&mut open)
             .default_width(420.0)
-            .show(ctx, |ui| self.contents(ui, file, recording));
+            .show(ctx, |ui| self.contents(ui, file, recording, db));
         self.open = open;
+    }
+
+    /// Load, save and delete named decoder stacks (`app.db`).
+    fn preset_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        list: &[DecoderInfo],
+        names: &[String],
+        db: &AppDb,
+    ) {
+        let presets = self.presets.get_or_insert_with(|| db.presets());
+        let mut load = None;
+        let mut save = false;
+        let mut delete = false;
+        let name = self.preset_name.trim().to_string();
+        ui.horizontal(|ui| {
+            ui.label("프리셋");
+            egui::ComboBox::from_id_salt("dec-preset")
+                .selected_text(if presets.is_empty() {
+                    "저장한 것 없음"
+                } else {
+                    "불러오기…"
+                })
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for (n, stack) in presets.iter() {
+                        if ui.selectable_label(*n == name, n).clicked() {
+                            load = Some((n.clone(), stack.clone()));
+                        }
+                    }
+                });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.preset_name)
+                    .desired_width(130.0)
+                    .hint_text("프리셋 이름"),
+            );
+            save = ui
+                .add_enabled(
+                    !self.entries.is_empty() && !name.is_empty(),
+                    egui::Button::new("저장"),
+                )
+                .on_hover_text("지금 디코더 스택(채널, 옵션, 이름)을 이 이름으로 저장")
+                .clicked();
+            delete = ui
+                .add_enabled(
+                    presets.iter().any(|(n, _)| *n == name),
+                    egui::Button::new("삭제"),
+                )
+                .clicked();
+        });
+        if let Some((n, stack)) = load {
+            match entries_from_preset(&stack, list, names) {
+                Ok((entries, label)) => {
+                    self.entries = entries;
+                    self.label = label;
+                    self.filter.clear();
+                    self.message = Some(format!("프리셋 '{n}'을(를) 불러왔습니다"));
+                }
+                Err(e) => self.message = Some(e),
+            }
+            self.preset_name = n;
+        }
+        if save {
+            self.message = Some(
+                match db.save_preset(&name, &preset_json(&self.entries, &self.label)) {
+                    Ok(()) => format!("프리셋 '{name}'을(를) 저장했습니다"),
+                    Err(e) => format!("프리셋을 저장하지 못했습니다: {e}"),
+                },
+            );
+            self.presets = None;
+        }
+        if delete {
+            self.message = Some(match db.delete_preset(&name) {
+                Ok(()) => format!("프리셋 '{name}'을(를) 지웠습니다"),
+                Err(e) => format!("프리셋을 지우지 못했습니다: {e}"),
+            });
+            self.presets = None;
+        }
     }
 
     fn contents(
@@ -462,6 +627,7 @@ impl DecodeUi {
         ui: &mut egui::Ui,
         file: Option<(&std::path::Path, &[String])>,
         recording: bool,
+        db: &AppDb,
     ) {
         let list = match &self.catalog {
             Catalog::Ready(l) => l.clone(),
@@ -485,6 +651,7 @@ impl DecodeUi {
             return;
         };
         let find = |id: &str| list.iter().find(|d| d.id == id);
+        self.preset_row(ui, &list, names, db);
 
         // First decoder: those that read logic signals, picked from a
         // searchable list (131 decoders are too many for a combo box).
@@ -872,5 +1039,149 @@ fn trim(s: &str) -> String {
             format!("{} {unit}", num.trim_end_matches('0').trim_end_matches('.'))
         }
         _ => s.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lv_decode::{ChannelInfo, OptValue, OptionInfo};
+
+    fn chan(id: &str) -> ChannelInfo {
+        ChannelInfo {
+            id: id.into(),
+            name: id.to_uppercase(),
+            desc: String::new(),
+        }
+    }
+
+    fn opt(id: &str, default: OptValue, values: Vec<OptValue>) -> OptionInfo {
+        OptionInfo {
+            id: id.into(),
+            desc: id.into(),
+            default: Some(default),
+            values,
+        }
+    }
+
+    fn decoder(
+        id: &str,
+        inputs: &str,
+        channels: Vec<ChannelInfo>,
+        options: Vec<OptionInfo>,
+    ) -> DecoderInfo {
+        DecoderInfo {
+            id: id.into(),
+            name: id.into(),
+            longname: id.into(),
+            desc: String::new(),
+            inputs: vec![inputs.into()],
+            outputs: vec![id.into()],
+            channels: Vec::new(),
+            opt_channels: channels,
+            options,
+            annotations: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn catalog() -> Vec<DecoderInfo> {
+        vec![
+            decoder(
+                "uart",
+                "logic",
+                vec![chan("rx"), chan("tx")],
+                vec![
+                    opt("baudrate", OptValue::Int(115200), vec![]),
+                    opt(
+                        "parity",
+                        OptValue::Str("none".into()),
+                        vec![OptValue::Str("none".into()), OptValue::Str("even".into())],
+                    ),
+                ],
+            ),
+            decoder(
+                "hla_line_reader_uart",
+                "uart",
+                vec![],
+                vec![opt("prefix", OptValue::Str(String::new()), vec![])],
+            ),
+        ]
+    }
+
+    fn names() -> Vec<String> {
+        ["TX", "RX", "D2", "D3", "D4", "D5", "D6", "D7"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn preset_round_trip() {
+        let list = catalog();
+        let mut uart = EntryForm::new(&list[0], &names());
+        // Channels guessed from the capture's names.
+        assert_eq!(uart.channels[0].3, Some(1));
+        assert_eq!(uart.channels[1].3, Some(0));
+        uart.channels[1].3 = None;
+        uart.options[0].value = "9600".into();
+        uart.options[1].value = "even".into();
+        let mut hla = EntryForm::new(&list[1], &names());
+        hla.options[0].value = "> ".into();
+        let text = preset_json(&[uart, hla], "Console");
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["decoders"][0]["channels"], json!({"rx": 1}));
+        assert_eq!(
+            v["decoders"][0]["options"],
+            json!({"baudrate": "9600", "parity": "even"})
+        );
+        // The prefix is trimmed like stack_entry does.
+        assert_eq!(v["decoders"][1]["options"], json!({"prefix": ">"}));
+
+        // Applied to a capture whose names would guess other channels.
+        let other: Vec<String> = (0..8).map(|i| format!("D{i}")).collect();
+        let (entries, label) = entries_from_preset(&text, &list, &other).unwrap();
+        assert_eq!(label, "Console");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].channels[0].3, Some(1));
+        assert_eq!(entries[0].channels[1].3, None);
+        let stack: Vec<StackEntry> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| e.stack_entry(i == 0).unwrap())
+            .collect();
+        assert_eq!(
+            lv_decode::stack_text(&stack),
+            "uart:rx=1:baudrate=9600:parity=even,hla_line_reader_uart:prefix=>"
+        );
+    }
+
+    #[test]
+    fn preset_skips_what_the_decoder_lost() {
+        let list = catalog();
+        let text = json!({
+            "label": "x",
+            "decoders": [{"id": "uart", "channels": {"rx": 12, "tx": 2, "gone": 3},
+                          "options": {"parity": "mark", "baudrate": "1200", "gone": "1"}}],
+        })
+        .to_string();
+        let (entries, _) = entries_from_preset(&text, &list, &names()).unwrap();
+        let e = &entries[0];
+        assert_eq!(e.channels[0].3, None, "channel 12 is past the capture's 8");
+        assert_eq!(e.channels[1].3, Some(2));
+        assert_eq!(e.options[0].value, "1200");
+        assert_eq!(e.options[1].value, "none", "'mark' is not offered");
+    }
+
+    #[test]
+    fn preset_errors() {
+        let list = catalog();
+        let missing = json!({"decoders": [{"id": "hla_removed_uart"}]}).to_string();
+        let e = entries_from_preset(&missing, &list, &names())
+            .err()
+            .unwrap();
+        assert!(e.contains("hla_removed_uart"), "{e}");
+        assert!(entries_from_preset("{}", &list, &names()).is_err());
+        assert!(entries_from_preset("not json", &list, &names()).is_err());
     }
 }

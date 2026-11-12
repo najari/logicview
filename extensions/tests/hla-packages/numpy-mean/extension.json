@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA for Async Serial that imports numpy: mean of each line's bytes",
+  "name": "Numpy Mean",
+  "extensions": {
+    "Numpy Mean": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.NumpyMean"
+    }
+  }
+}

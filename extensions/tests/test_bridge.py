@@ -122,8 +122,11 @@ except TypeError as e:
 installed = sorted(os.listdir(os.path.join(ROOT, 'decoders')))
 check('detection', [d for d in installed if d.startswith('hla_')] == [
     'hla_can_messages_can', 'hla_dynamic_types_uart', 'hla_echo_errors_uart',
+    'hla_frame_echo_i2s', 'hla_frame_echo_lin', 'hla_frame_echo_manchester',
+    'hla_frame_echo_onewire', 'hla_frame_echo_parallel',
     'hla_i2c_transactions_i2c', 'hla_legacy_api_uart', 'hla_line_reader_uart',
     'hla_spi_burst_spi'], installed)
+check('manchester decoder installed', 'manchester' in installed, installed)
 
 # --- I2C: write 50 [10 20], repeated start, read 50 [AB] NACK, stop ------------
 seq = [('START', None), ('ADDRESS WRITE', 0x50), ('ACK', None), ('DATA WRITE', 0x10), ('ACK', None),
@@ -156,6 +159,131 @@ check('can messages', len(got) == 3 and got[0].startswith('ID 0x123 [3] 11 22 33
 check('can span', anns[0][:2] == (0, round(60 * 680 / 67)), anns[0][:2])
 _, _, anns = run('hla_can_messages_can', pk, id_filter='7ff')
 check('can filter', [a[0][:8] for _, _, _, a in anns] == ['ID 0x7FF'], anns)
+
+
+def echoed(decoder_id, packets, **options):
+    """(start, end, text) of each frame the Frame Echo HLA returns."""
+    _, cls, anns = run(decoder_id, packets, **options)
+    return cls, [(s, e, a[0]) for s, e, _, a in anns]
+
+
+# --- LIN on uart: break (with its 0x00 byte), sync, PID 0x12, 2 data, checksum
+def lin_byte(t, value, valid=True, rxtx=0):
+    return (t, t + 10, ['FRAME', rxtx, (value, valid)])
+
+
+pk = [lin_byte(0, 0, valid=False), (0, 15, ['BREAK', 0, 0]),
+      lin_byte(20, 0x55), lin_byte(30, 0x92), lin_byte(45, 0x01), lin_byte(55, 0x02),
+      lin_byte(65, 0x6A), (75, 85, ['IDLE', 0, 0]), (85, 95, ['IDLE', 0, 0])]
+cls, got = echoed('hla_frame_echo_lin', pk)
+check('lin frames', got == [
+    (0, 15, 'header_break'), (20, 30, 'header_sync'), (30, 40, 'header_pid: protected_id=18'),
+    (45, 55, 'data: data=1, index=0'), (55, 65, 'data: data=2, index=1'),
+    (65, 75, 'checksum: checksum=106')], got)
+check('lin stacks on uart', cls.inputs == ['uart'], cls.inputs)
+# Idle before the response (response space) does not end the transaction;
+# eight data bytes and a checksum end it without idle.
+pk = [(0, 15, ['BREAK', 0, 0]), lin_byte(20, 0x55), lin_byte(30, 0x3C),
+      (40, 50, ['IDLE', 0, 0]), (50, 60, ['IDLE', 0, 0]), (60, 70, ['IDLE', 0, 0])]
+pk += [lin_byte(100 + 10 * i, i) for i in range(9)]
+_, got = echoed('hla_frame_echo_lin', pk)
+check('lin response space, 8 bytes', [t for _, _, t in got][3:] ==
+      ['data: data={}, index={}'.format(i, i) for i in range(8)] + ['checksum: checksum=8'], got)
+_, got = echoed('hla_frame_echo_lin', [(s, e, [d[0], 1, d[2]]) for s, e, d in pk], hla_lin_line='TX')
+check('lin TX line', len(got) == 12, got)
+
+
+# --- 1-Wire on onewire_link: match ROM 28 AABBCCDDEEFF crc 0x99, data 0x44; then search
+def ow_bits(t, value, n, step=10):
+    return [(t + i * step, t + i * step + 8, ['BIT', (value >> i) & 1]) for i in range(n)]
+
+
+rom = 0x99 << 56 | 0xFFEEDDCCBBAA << 8 | 0x28
+pk = [(0, 100, ['RESET/PRESENCE', True])] + ow_bits(200, 0x55, 8) + ow_bits(300, rom, 64) + ow_bits(1000, 0x44, 8)
+cls, got = echoed('hla_frame_echo_onewire', pk)
+check('onewire match rom', [t for _, _, t in got] == [
+    'reset', 'presence', 'rom_command: rom_command=0x55, description=match', 'family_code: family=0x28',
+    'id: id={}'.format(0xFFEEDDCCBBAA), 'crc: crc=0x99', 'data: data=0x44'], got)
+check('onewire spans', got[2][:2] == (200, 278) and got[3][:2] == (300, 378) and got[5][:2] == (860, 938), got)
+check('onewire stacks on onewire_link', cls.inputs == ['onewire_link'], cls.inputs)
+search = []
+for i in range(64):
+    b = (rom >> i) & 1
+    search += [(2000 + 30 * i, 2008 + 30 * i, ['BIT', b]), (2010 + 30 * i, 2018 + 30 * i, ['BIT', 1 - b]),
+               (2020 + 30 * i, 2028 + 30 * i, ['BIT', b])]
+pk = [(0, 100, ['RESET/PRESENCE', False])] + ow_bits(200, 0xEC, 8) + search
+_, got = echoed('hla_frame_echo_onewire', pk)
+check('onewire alarm search', [t for _, _, t in got] == [
+    'reset', 'alarm: rom_command=0xEC', 'family_code: family=0x28',
+    'id: id={}'.format(0xFFEEDDCCBBAA), 'crc: crc=0x99'], got)
+_, got = echoed('hla_frame_echo_onewire', [(0, 100, ['RESET/PRESENCE', True])] + ow_bits(200, 0x12, 8))
+check('onewire invalid command', got[-1][2] == 'invalid_rom_command: rom_command=0x12', got)
+
+# --- I2S, Simple Parallel, Manchester words ------------------------------------
+pk = [(0, 32, ['DATA', ['L', 0xFFFF]]), (32, 64, ['DATA', ['R', 0x0001]])]
+_, got = echoed('hla_frame_echo_i2s', pk, hla_i2s_format='signed-16')
+check('i2s signed', [t for _, _, t in got] == ['data: channel=0, data=-1', 'data: channel=1, data=1'], got)
+_, got = echoed('hla_frame_echo_i2s', pk)
+check('i2s unsigned', got[0][2] == 'data: channel=0, data=65535', got)
+_, got = echoed('hla_frame_echo_parallel', [(0, 5, ['ITEM', [0xA5, 8]]), (0, 5, ['WORD', [0xA5, 8, 1]])])
+check('parallel items', got == [(0, 5, 'data: data=165')], got)
+cls, got = echoed('hla_frame_echo_manchester', [(0, 80, ['WORD', 0x3C, 8])])
+check('manchester words', got == [(0, 80, 'data: data=60')] and cls.inputs == ['manchester'], got)
+
+# --- The manchester decoder: encode bits, decode the edges back ---------------
+man = importlib.import_module('manchester.pd')
+
+
+def encode(bits, mode, rising_is_one=True, idle=0, half=10, t0=100):
+    cells, prev = [], idle
+    for b in bits:
+        if mode == 'manchester':
+            h0 = 0 if b == rising_is_one else 1
+            h1 = 1 - h0
+        elif mode == 'differential':
+            h0 = 1 - prev if b == 0 else prev
+            h1 = 1 - h0
+        else:
+            h0 = 1 - prev
+            mid = b == 1 if mode == 'bi-phase mark' else b == 0
+            h1 = 1 - h0 if mid else h0
+        cells += [h0, h1]
+        prev = h1
+    levels = cells + [idle]
+    edges, level = [], idle
+    for i, v in enumerate(levels):
+        if v != level:
+            edges.append((t0 + i * half, v))
+            level = v
+    return edges
+
+
+def decode_bits(edges, mode, rising_is_one=True, half=10):
+    cells = man.align(man.cells_from_edges(edges, half), edges, half, mode)
+    return man.bits_from_cells(cells, half, mode, rising_is_one, 1 - edges[0][1])
+
+
+patterns = [[1, 0, 1, 1, 0, 0, 1, 0], [0, 1, 1, 0, 1, 0, 0, 1, 1, 1]]
+for mode in man.MODES:
+    for idle in (0, 1):
+        for bits in patterns:
+            for rising in (True, False):
+                got = [b for _, _, b in decode_bits(encode(bits, mode, rising, idle), mode, rising)]
+                # Bi-phase: the edge back to idle can add one bit at the end.
+                ok = got[:len(bits)] == bits and len(got) - len(bits) in (
+                    (0, 1) if mode.startswith('bi-phase') else (0,))
+                check('manchester {} idle {} {}{}'.format(mode, idle, ''.join(map(str, bits)),
+                                                         '' if rising else ' falling'), ok, got)
+                if mode != 'manchester':
+                    break
+# Without a full-bit interval the first edge is taken as mid-bit (Manchester
+# codes) or a bit boundary (bi-phase): right for these, ambiguous in general.
+for mode, idle, bits in (('manchester', 0, [1] * 8), ('bi-phase mark', 0, [1] * 8),
+                         ('bi-phase space', 1, [0] * 8)):
+    got = [b for _, _, b in decode_bits(encode(bits, mode, True, idle), mode)]
+    check('manchester no full bit {} {}'.format(mode, ''.join(map(str, bits))), got == bits, got)
+spans = decode_bits(encode([1, 0, 1, 1], 'manchester'), 'manchester')
+check('manchester bit spans', [s[:2] for s in spans] == [(100, 120), (120, 140), (140, 160), (160, 180)], spans)
 
 print()
 print('FAILED: ' + ', '.join(FAILED) if FAILED else 'all tests passed')

@@ -16,4 +16,5 @@ lv-fx2lafw = { path = "../../crates/lv-fx2lafw" }
 lv-mcp = { path = "../../crates/lv-mcp" }
 lv-store = { path = "../../crates/lv-store" }
 rfd = "0.18.0"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde_json = "1.0.154"

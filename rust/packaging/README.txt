@@ -24,7 +24,10 @@ logicview.exe 를 실행한다.
   처음 열 때 펌웨어(firmware\fx2lafw-saleae-logic.fw)를 올리느라 2초쯤 걸린다.
   수집 중에는 파형이 실시간으로 늘어난다. 수집 파일은 %LOCALAPPDATA%\logicview\captures 에 쌓인다.
 - 아래 줄: 열기(.lvcap, .sr), 저장(.lvcap, .sr, CSV), 전체 보기·확대·축소, 채널(이름·숨기기),
-  디코더(UART, I2C, SPI, CAN 등 sigrok 디코더 131개, 스택), 표(디코딩 결과 검색), MCP.
+  디코더(UART, I2C, SPI, CAN 등 sigrok 디코더 131개, 스택, 프리셋), 표(디코딩 결과 검색), MCP.
+  디코더 창의 "프리셋" 줄에서 지금 스택(디코더, 채널, 옵션, 이름)을 이름 붙여 저장하고 다시 불러온다.
+- 샘플레이트, 샘플 수, 채널 이름·보이기, 트리거 문자열과 앞 구간 비율은 바꿀 때마다
+  %LOCALAPPDATA%\logicview\app.db 에 저장되어 다음 실행에 그대로 나온다 (명령줄 --rate 등이 우선).
 - 파형: 휠로 확대·축소, 끌어서 이동, 클릭으로 마커 A·B(시간 차와 주파수), 오른쪽 클릭·Esc로 마커 지우기,
   Home으로 전체 보기.
 
@@ -58,8 +61,13 @@ query_frames(캡처 파일에 읽기 전용 SQL).
 ---------------------------------
   pwsh -File extensions\hla.ps1 install <확장 폴더 | .zip | GitHub URL>
   pwsh -File extensions\hla.ps1 list
+  pwsh -File extensions\hla.ps1 package add numpy     (HLA가 import하는 Python 패키지, 아래)
 
 설치한 HLA는 디코더 창에서 프로토콜 디코더 위에 쌓아 쓴다 (예: uart 위에 hla_..._uart).
+입력: Async Serial(uart), I2C, SPI, CAN, LIN(uart 위), 1-Wire(onewire_link 위), Manchester,
+I2S / PCM, Simple Parallel.
+numpy처럼 컴파일된 패키지는 MSYS2(https://www.msys2.org/, 기본 C:\msys64, 다른 곳이면 -Msys2 <폴더>)의
+UCRT64 패키지에서 가져온다. 순수 Python 패키지는 MSYS2 없이 PyPI에서 받는다.
 MCP의 add_high_level_analyzer는 확장 폴더를 받아 알아서 설치한다. 확장 코드는 앱 안의 Python에서
 실행되므로 믿을 수 있는 확장만 설치할 것.
 

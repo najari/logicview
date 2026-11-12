@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "author": "logicview tests",
+  "description": "Test HLA for LIN, 1-Wire, Manchester, I2S / PCM and Simple Parallel: echoes every input frame",
+  "name": "Frame Echo",
+  "extensions": {
+    "Frame Echo": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.FrameEcho"
+    }
+  }
+}

@@ -194,7 +194,7 @@ NFR-1을 늘 만족한다고 볼 수 없다.** 12 MHz까지는 늘 통과했다.
 
 아직 하지 않은 것: 한글 입력기(IME) 조합 입력 확인(자동화는 입력기를 거치지 않음), 실제 마우스 클릭으로 마커 놓기
 (winit이 보낸 창 메시지를 받지 않아 `--markers`로 대신 시험), 저장 대화상자에서 `.sr`·CSV 고르기(저장 함수는
-단위 테스트·`lvcli`로 시험), UI-10(마지막 설정 기억, P2).
+단위 테스트·`lvcli`로 시험). UI-10(마지막 설정 기억)은 2026-11-12에 했다 (아래 "디코더 프리셋, 마지막 설정").
 
 ## M3 디코더 (2026-11-10)
 
@@ -241,7 +241,8 @@ lvcli decode cap.lvcap -P i2c:scl=SCL:sda=SDA,eeprom24xx --save --label EEPROM
 | 앱: `test.sr` 열기 → D0 이름 RX → 디코더… → uart → 디코딩 (UI Automation) | RX가 D0에 저절로 배정, 77 프레임 저장, 주석 행 2개와 표 표시, 검색 "rx-data" 63 프레임 |
 | `cargo test` | 런타임이 있으면 libsigrokdecode로 UART 디코딩과 오류 문장까지 시험, 없으면 건너뜀 |
 
-아직 하지 않은 것: 표에서 줄 클릭으로 이동(마우스 자동화가 안 되어 직접 확인 필요), 디코더 옵션 프리셋 저장.
+아직 하지 않은 것: 표에서 줄 클릭으로 이동(마우스 자동화가 안 되어 직접 확인 필요).
+디코더 옵션 프리셋 저장은 2026-11-12에 했다 (아래 "디코더 프리셋, 마지막 설정").
 배포 zip에 디코더 런타임 넣기는 M5에서 했다 (아래 "M5 배포"의 `sigrok\`).
 
 ## M4 MCP (2026-11-10)
@@ -404,7 +405,39 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 비슷하게 끊긴 적이 있어 USB 쪽 문제로 본다. 네 번째 시험 때와 달리 통과한 회의 값(2.091 s, 마무리 수십 ms)은
 앞의 시험들과 같았다.
 
+## 디코더 프리셋, 마지막 설정 (2026-11-12)
+
+- 마지막 설정(UI-10): 샘플레이트, 샘플 수(수동 중지 포함), 채널 이름·보이기, 트리거 문자열, 트리거 앞 구간 비율을
+  `%LOCALAPPDATA%\logicview\app.db`의 `setting(key, value)`에 둔다. 값이 바뀐 프레임에서, 글자를 고치는 칸에
+  포커스가 없으면 바로 쓰고, 끝낼 때도 한 번 쓴다. 시작할 때 읽은 뒤 명령줄 `--rate`·`--samples`·`--trigger`를
+  덮어쓰며, 명령줄 값만으로는 저장하지 않는다. 잘못된 값(지원하지 않는 샘플레이트, 개수가 다른 채널 목록 등)은
+  무시한다. 트리거 켜기는 기억하지 않는다 (다음 수집이 트리거를 기다리며 멈춘 것처럼 보이지 않게).
+- 디코더 프리셋: 디코더 창 맨 위 "프리셋" 줄에서 지금 스택(디코더 id, 첫 디코더의 채널, 기본값과 다른 옵션, 이름)을
+  이름 붙여 `app.db`의 `decoder_preset(name, stack)`에 저장하고, 불러오기·삭제한다. 불러올 때 디코더에 없는
+  옵션이나 더는 고를 수 없는 값, 캡처 채널 수를 넘는 채널은 건너뛰고, 디코더가 없으면(예: 지운 HLA) 알린다.
+- `LOGICVIEW_APP_DB`로 다른 파일을 쓸 수 있다 (시험용).
+- HLA 입력에 LIN, 1-Wire, Manchester, I2S / PCM, Simple Parallel이 늘었고(저장소 [README](../README.md#saleae-logic-2-확장hla-사용)),
+  numpy 같은 패키지는 `extensions\hla.ps1 package add`로 넣는다. 패키지 zip에는 `extensions\decoders\manchester`가 더 들어간다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release`, `cargo clippy`, `cargo fmt --check` | 경고 없음 |
+| `cargo test --release --workspace` | 49개 모두 통과 (새 시험 7개: 설정 저장·다시 읽기, 잘못된 값, 파일 없음, 프리셋 저장·바꾸기·지우기, 프리셋 JSON 왕복, 없어진 옵션·채널 건너뛰기, 프리셋 오류) |
+| 앱(UI Automation, `LOGICVIEW_APP_DB`는 임시 파일): 빈 파일로 시작 | 16 MHz, 10 M (기본값), 아무것도 쓰지 않음 |
+| `app.db`에 1 MHz, 수동 중지, 이름 TX·RX·클럭, 트리거 `1=r` 30% 를 넣고 시작 | 도구 막대와 채널 창에 그대로 표시 |
+| 같은 파일로 `--rate 4M` | 4 MHz로 시작, 파일의 샘플레이트는 1 MHz 그대로 |
+| 채널 창에서 D7 보이기를 켜고 D3 이름을 SDA로 바꾼 뒤 창 닫기 | 파일에 저장, 다음 실행에 그대로 |
+| 실행 중 D6 보이기를 끄고 1.5 s 뒤 파일 읽기 (그다음 강제 종료) | 끝내기 전에 이미 저장됨 |
+| `test.sr`을 열고 디코더 창에서 uart, baudrate 9600, 프리셋 이름 "UART 9600" → 저장 | `decoder_preset`에 `{"label":"UART","decoders":[{"id":"uart","channels":{},"options":{"baudrate":"9600"}}]}` |
+| 새로 띄운 앱에서 프리셋 "UART 9600" 불러오기 | uart 선택, baudrate 9600, 이름 UART, "프리셋 'UART 9600'을(를) 불러왔습니다" |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버 / Python 서버) | 44개 / 42개 모두 통과 |
+| `scripts\package.ps1`, `scripts\test-package.ps1 -Hardware` | 956개 파일, 풀면 56.4 MB, zip 22.3 MB. 7개 모두 통과 |
+
 ## PRD와 다르게 한 것
+
+- `app.db`에는 PRD의 `setting(key, value)`와 디코더 프리셋 표 `decoder_preset(name, stack)`을 둔다. HLA용 Python
+  패키지 목록(PRD의 `hla_package`)은 앱이 아니라 `extensions\hla.ps1`이 다루므로
+  `%LOCALAPPDATA%\libsigrokdecode\saleae_compat\packages.json`에 둔다 (SLogicView와 함께 쓴다).
 
 - CAP-6: 전송이 STALL로 끝나면 halt를 풀고 **수집을 거기서 끝낸다** (다시 큐에 넣으면 그 사이 샘플이 빠진
   캡처가 되기 때문). 이유는 결과에 "USB 파이프 STALL"로 알린다.

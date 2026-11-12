@@ -3,7 +3,8 @@ protocol decoder.
 
 Each installed HLA gets one decoder package per input protocol (see hla.ps1).
 That package calls make_decoder(), which loads the HLA and builds a Decoder
-class that is stacked on a sigrok decoder (uart, i2c, spi or can):
+class that is stacked on a sigrok decoder (see INPUTS: uart, i2c, spi, can,
+uart for LIN, onewire_link, manchester, i2s, parallel):
 
 - the lower decoder's Python output is turned into the frames Logic 2's
   analyzers give an HLA (types and data keys as in Saleae's frame format
@@ -14,6 +15,9 @@ class that is stacked on a sigrok decoder (uart, i2c, spi or can):
 
 HLA print() output goes to hla.log next to this file. With the environment
 variable SALEAE_HLA_TRACE=1 every frame an HLA returns is logged there too.
+
+Python packages added with "hla.ps1 package add" live in site-packages next
+to this file and their DLLs in bin; both are put on the search paths here.
 """
 
 import contextlib
@@ -34,11 +38,26 @@ from saleae.analyzers import AnalyzerFrame, HighLevelAnalyzer
 from saleae.analyzers.settings import (StringSetting, NumberSetting,
                                        ChoicesSetting, ValidationError)
 
-LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'hla.log')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+LOG_PATH = os.path.join(_HERE, 'hla.log')
 TRACE = os.environ.get('SALEAE_HLA_TRACE', '') not in ('', '0')
 
-INPUT_LABELS = {'uart': 'Async Serial', 'i2c': 'I2C', 'spi': 'SPI',
-                'can': 'CAN'}
+
+def _add_package_paths():
+    packages = os.path.join(_HERE, 'site-packages')
+    if os.path.isdir(packages) and packages not in sys.path:
+        sys.path.append(packages)
+    dlls = os.path.join(_HERE, 'bin')
+    if os.path.isdir(dlls):
+        # Extension modules (numpy's .pyd) load their DLLs from here.
+        if hasattr(os, 'add_dll_directory'):
+            os.add_dll_directory(dlls)
+        path = os.environ.get('PATH', '')
+        if dlls not in path.split(os.pathsep):
+            os.environ['PATH'] = dlls + os.pathsep + path
+
+
+_add_package_paths()
 
 
 def _value_bytes(value, nbits):
@@ -258,8 +277,227 @@ class CanInput:
         yield a, b, 'ack_field', {'ack': True}
 
 
-INPUTS = {'uart': UartInput, 'i2c': I2cInput, 'spi': SpiInput,
-          'can': CanInput}
+class LinInput:
+    """sigrok uart (one line) -> LIN 'header_break', 'header_sync',
+    'header_pid', 'data' (data, index) and 'checksum' frames.
+
+    The header frames are sent as they arrive. The response bytes are sent
+    when the transaction ends (the next break, two idle frame times, or eight
+    data bytes and a checksum), with the last byte as the checksum, so
+    'data_or_checksum' is never sent. protected_id is the 6-bit identifier.
+    The 0x00 byte that a break reads as a framing error is dropped."""
+
+    options = (
+        {'id': 'hla_lin_line', 'desc': 'UART line carrying LIN',
+         'default': 'RX', 'values': ('RX', 'TX')},
+    )
+
+    def __init__(self, options):
+        self.line = 1 if options.get('hla_lin_line') == 'TX' else 0
+        self.state = 'break'
+        self.response = []
+        self.idle = 0
+        self.null = None
+
+    def _flush(self):
+        response, self.response = self.response, []
+        if not response:
+            return
+        *data, last = response
+        for i, (ss, es, value) in enumerate(data):
+            yield ss, es, 'data', {'data': value, 'index': i}
+        yield last[0], last[1], 'checksum', {'checksum': last[2]}
+
+    def _byte(self, ss, es, value):
+        if self.state == 'sync':
+            self.state = 'pid' if value == 0x55 else 'break'
+            if value == 0x55:
+                yield ss, es, 'header_sync', {}
+        elif self.state == 'pid':
+            self.state = 'response'
+            yield ss, es, 'header_pid', {'protected_id': value & 0x3f}
+        elif self.state == 'response':
+            self.idle = 0
+            self.response.append((ss, es, value))
+            if len(self.response) == 9:
+                self.state = 'break'
+                yield from self._flush()
+
+    def feed(self, ss, es, data):
+        cmd, rxtx, pdata = data
+        if rxtx != self.line:
+            return
+        if cmd == 'BREAK':
+            self.null = None
+            yield from self._flush()
+            self.state = 'sync'
+            yield ss, es, 'header_break', {}
+            return
+        if cmd not in ('FRAME', 'IDLE'):
+            return
+        if self.null:
+            null, self.null = self.null, None
+            yield from self._byte(*null)
+        if cmd == 'FRAME':
+            value, valid = pdata
+            if value == 0 and not valid:
+                self.null = (ss, es, value)
+            else:
+                yield from self._byte(ss, es, value)
+        elif self.state == 'response' and self.response:
+            # Idle before the first response byte is the response space.
+            self.idle += 1
+            if self.idle >= 2:
+                self.state = 'break'
+                yield from self._flush()
+
+
+# ROM command -> (frame type, description, what follows).
+_ONEWIRE_COMMANDS = {
+    0x33: ('rom_command', 'read', 'rom'),
+    0x0f: ('rom_command', 'read', 'rom'),
+    0x55: ('rom_command', 'match', 'rom'),
+    0x69: ('rom_command', 'match', 'rom'),
+    0xcc: ('rom_command', 'skip', 'data'),
+    0x3c: ('rom_command', 'skip', 'data'),
+    0xa5: ('rom_command', 'skip', 'data'),
+    0xf0: ('rom_command', 'search', 'search'),
+    0xec: ('alarm', None, 'search'),
+}
+
+
+class OneWireInput:
+    """sigrok onewire_link -> 1-Wire 'reset', 'presence', 'rom_command',
+    'family_code', 'id', 'crc', 'data', 'invalid_rom_command' and 'alarm'
+    frames. 'reset' and 'presence' both span the presence detect window
+    (onewire_link reports them as one packet). Resume (0xA5) and overdrive
+    skip (0x3C) are reported as 'skip', overdrive match (0x69) as 'match'."""
+
+    options = ()
+
+    def __init__(self, options):
+        self.state = None
+        self.bits = []
+        self.slots = []
+
+    def feed(self, ss, es, data):
+        cmd, value = data
+        if cmd == 'RESET/PRESENCE':
+            self.state, self.bits, self.slots = 'command', [], []
+            yield ss, es, 'reset', {}
+            if value:
+                yield ss, es, 'presence', {}
+            return
+        if cmd != 'BIT' or self.state is None:
+            return
+        if self.state == 'search':
+            # Each ROM bit: device bit, its complement, the master's choice.
+            self.slots.append((ss, es, value))
+            if len(self.slots) < 3:
+                return
+            (first, _, _), _, (_, end, chosen) = self.slots
+            self.slots = []
+            self.bits.append((first, end, chosen))
+        else:
+            self.bits.append((ss, es, value))
+        need = 64 if self.state in ('rom', 'search') else 8
+        if len(self.bits) < need:
+            return
+        bits, self.bits = self.bits, []
+
+        def field(lo, hi):
+            value = sum(b[2] << i for i, b in enumerate(bits[lo:hi]))
+            return bits[lo][0], bits[hi - 1][1], value
+
+        if self.state == 'command':
+            a, b, command = field(0, 8)
+            ftype, desc, self.state = _ONEWIRE_COMMANDS.get(
+                command, ('invalid_rom_command', None, 'data'))
+            frame = {'rom_command': bytes([command])}
+            if desc:
+                frame['description'] = desc
+            yield a, b, ftype, frame
+        elif self.state in ('rom', 'search'):
+            a, b, family = field(0, 8)
+            yield a, b, 'family_code', {'family': bytes([family])}
+            a, b, ident = field(8, 56)
+            yield a, b, 'id', {'id': ident}
+            a, b, crc = field(56, 64)
+            yield a, b, 'crc', {'crc': bytes([crc])}
+            self.state = 'data'
+        else:
+            a, b, byte = field(0, 8)
+            yield a, b, 'data', {'data': bytes([byte])}
+
+
+class ManchesterInput:
+    """manchester (the decoder installed with this bridge) -> 'data' frames,
+    one per word."""
+
+    options = ()
+
+    def __init__(self, options):
+        pass
+
+    def feed(self, ss, es, data):
+        if data[0] == 'WORD':
+            yield ss, es, 'data', {'data': data[1]}
+
+
+class I2sInput:
+    """sigrok i2s -> 'data' frames (channel 0 left, 1 right). sigrok gives
+    the raw word, so the sample format is an option here."""
+
+    options = (
+        {'id': 'hla_i2s_format',
+         'desc': 'I2S samples for the HLA (signed-N: N-bit two\'s complement)',
+         'default': 'unsigned',
+         'values': ('unsigned', 'signed-8', 'signed-16', 'signed-24',
+                    'signed-32')},
+    )
+
+    def __init__(self, options):
+        fmt = options.get('hla_i2s_format', 'unsigned')
+        self.bits = int(fmt.split('-')[1]) if fmt.startswith('signed-') else 0
+
+    def feed(self, ss, es, data):
+        if data[0] != 'DATA':
+            return
+        channel, value = data[1]
+        if self.bits:
+            value &= (1 << self.bits) - 1
+            if value >> (self.bits - 1):
+                value -= 1 << self.bits
+        yield ss, es, 'data', {'channel': 0 if channel == 'L' else 1,
+                               'data': value}
+
+
+class ParallelInput:
+    """sigrok parallel -> Simple Parallel 'data' frames, one per clocked
+    item (the bus width is the number of assigned data lines)."""
+
+    options = ()
+
+    def __init__(self, options):
+        pass
+
+    def feed(self, ss, es, data):
+        if data[0] == 'ITEM':
+            yield ss, es, 'data', {'data': data[1][0]}
+
+
+# Input protocol -> (sigrok decoder the HLA stacks on, adapter, Logic 2 name).
+INPUTS = {
+    'uart': ('uart', UartInput, 'Async Serial'),
+    'i2c': ('i2c', I2cInput, 'I2C'),
+    'spi': ('spi', SpiInput, 'SPI'),
+    'can': ('can', CanInput, 'CAN'),
+    'lin': ('uart', LinInput, 'LIN'),
+    'onewire': ('onewire_link', OneWireInput, '1-Wire'),
+    'manchester': ('manchester', ManchesterInput, 'Manchester'),
+    'i2s': ('i2s', I2sInput, 'I2S / PCM'),
+    'parallel': ('parallel', ParallelInput, 'Simple Parallel'),
+}
 
 
 # --- Rendering ---------------------------------------------------------------
@@ -390,7 +628,7 @@ def _doc(manifest, settings, result_types):
                  manifest.get('extension_name', ''),
                  manifest.get('version', ''), manifest.get('author', '')),
              'Input: {} decoder ({} frames).'.format(
-                 manifest['input'], INPUT_LABELS[manifest['input']])]
+                 INPUTS[manifest['input']][0], INPUTS[manifest['input']][2])]
     if manifest.get('source'):
         lines.append('Source: ' + manifest['source'])
     if settings:
@@ -406,7 +644,7 @@ def make_decoder(package_dir):
     with open(os.path.join(package_dir, 'hla.json'), encoding='utf-8') as f:
         manifest = json.load(f)
     hla_class = _load_hla_class(manifest, package_dir)
-    adapter_class = INPUTS[manifest['input']]
+    lower, adapter_class, _ = INPUTS[manifest['input']]
     settings = hla_class._get_settings()
     result_types = dict(getattr(hla_class, 'result_types', None) or {})
     # Some HLAs add result types in __init__: probe once with default settings.
@@ -443,7 +681,7 @@ def make_decoder(package_dir):
         longname = manifest['longname']
         desc = manifest.get('desc') or manifest['longname']
         license = manifest.get('license') or 'unknown'
-        inputs = [manifest['input']]
+        inputs = [lower]
         outputs = [manifest['id']]
         tags = ['Saleae HLA']
 

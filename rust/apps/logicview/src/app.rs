@@ -16,6 +16,7 @@ use crate::acquire::{self, DeviceSlot, Msg, Session};
 use crate::bench::Bench;
 use crate::capture_view::CaptureView;
 use crate::decode_ui::{self, Analyzer, DecodeUi, TableAction, TableUi};
+use crate::settings::{AppDb, Remembered};
 use crate::wave::{self, Row, View, WaveStats};
 
 /// Channel colours in resistor colour-code order, as sigrok tools use.
@@ -110,6 +111,11 @@ pub struct App {
     mcp_cfg: lv_mcp::Config,
     mcp_addr: (String, u16),
     mcp: Option<lv_mcp::HttpHandle>,
+
+    /// `app.db`: last settings (UI-10) and decoder presets.
+    db: AppDb,
+    /// The settings as last written to `db`.
+    saved: Remembered,
 }
 
 pub fn setup_fonts(ctx: &egui::Context) {
@@ -197,9 +203,21 @@ impl App {
             mcp_cfg,
             mcp_addr: (mcp_host, mcp_port),
             mcp: None,
+            db: AppDb::open_default(),
+            saved: Remembered {
+                rate: 0,
+                samples: None,
+                names: Vec::new(),
+                shown: Vec::new(),
+                trigger_text: String::new(),
+                pre_percent: 0,
+            },
         };
         // MCP captures and the toolbar share one opened device.
         app.mcp_cfg.device_slot = app.slot.clone();
+        // UI-10: the last settings, then the command line on top.
+        let last = Remembered::load(&app.db, app.remembered());
+        app.apply(&last);
         if let Some(r) = preset.rate.filter(|r| SAMPLERATES.contains(r)) {
             app.rate = r;
         }
@@ -220,7 +238,50 @@ impl App {
         for (slot, &m) in app.markers.iter_mut().zip(&preset.markers) {
             *slot = Some(m);
         }
+        app.saved = app.remembered();
         app
+    }
+
+    // ---- remembered settings (UI-10) ----------------------------------------
+
+    fn remembered(&self) -> Remembered {
+        Remembered {
+            rate: self.rate,
+            samples: self.samples,
+            names: self.names.clone(),
+            shown: self.shown.clone(),
+            trigger_text: self.trigger_text.clone(),
+            pre_percent: self.pre_percent,
+        }
+    }
+
+    fn apply(&mut self, r: &Remembered) {
+        self.rate = r.rate;
+        self.samples = r.samples;
+        self.names = r.names.clone();
+        self.shown = r.shown.clone();
+        self.trigger_text = r.trigger_text.clone();
+        self.pre_percent = r.pre_percent;
+    }
+
+    /// Write changed settings, once no text field is being edited (and on
+    /// exit, see `Drop`).
+    fn remember(&mut self, ctx: &egui::Context) {
+        if ctx.text_edit_focused() {
+            return;
+        }
+        self.save_settings();
+    }
+
+    fn save_settings(&mut self) {
+        let now = self.remembered();
+        if now == self.saved {
+            return;
+        }
+        if let Err(e) = now.save(&self.db) {
+            log::warn!("saving settings: {e}");
+        }
+        self.saved = now;
     }
 
     // ---- files -------------------------------------------------------------
@@ -1223,6 +1284,12 @@ fn trigger_sample(json: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        self.save_settings();
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -1308,7 +1375,9 @@ impl eframe::App for App {
             &ctx,
             file.as_ref().map(|(p, n)| (p.as_path(), n.as_slice())),
             recording,
+            &self.db,
         );
+        self.remember(&ctx);
         // eframe reports the previous frame's total CPU time.
         if let Some(last) = self.timings.back_mut() {
             last.1 = cpu_prev_ms;

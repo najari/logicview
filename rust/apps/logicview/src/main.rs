@@ -20,6 +20,7 @@ mod app;
 mod bench;
 mod capture_view;
 mod decode_ui;
+mod settings;
 mod wave;
 
 use std::path::PathBuf;

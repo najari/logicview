@@ -3,7 +3,7 @@ M5 acceptance: unpack the release zip into an empty folder and use it the
 way a new PC would, with nothing else found on PATH and no development
 environment variables.
 
-  .\scripts\test-package.ps1 -Zip dist\logicview-0.1.3-windows-x64.zip -Python <python.exe> [-Hardware]
+  .\scripts\test-package.ps1 -Zip dist\logicview-0.1.4-windows-x64.zip -Python <python.exe> [-Hardware]
 
 -Python runs the test helpers (make-capture.py, mcp/tests/test_mcp.py); the
 package itself does not use it. -Hardware adds a capture from the analyzer.

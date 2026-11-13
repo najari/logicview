@@ -449,6 +449,26 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 | `scripts\test-package.ps1 -Hardware` (`logicview-0.1.2-windows-x64.zip`) | 7개 모두 통과 |
 | `extensions\tests\run-tests.ps1` (HLA 브리지) | 60개 모두 통과 |
 
+## 0.1.4 빌드·시험 (2026-11-13)
+
+`rust-v0.1.4`(`1363dd6`)를 받아 같은 PC, 같은 포트 `usb/1-8`에서 시험했다. 펌웨어는 올라가 있었다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release` | 성공, `lvcli --version`은 0.1.4 |
+| `cargo fmt --check`, `cargo clippy --workspace --all-targets` | 경고 없음 |
+| `cargo test --release --workspace` | 50개 모두 통과 |
+| `lvcli bench --rate 24M --samples 50M --runs 5` 두 번 | **5/5, 5/5**. 2.085~2.092 s, 대기열 최대 3%, 마무리 18~102 ms |
+| `lvcli bench --rate 12M --samples 50M --runs 3` | 3회 모두 통과 |
+| `mcp/tests/test_mcp.py --sigrok-cli <릴리스 앱>\sigrok-cli.exe --server target\release\logicview.exe --hardware` | 44개 모두 통과 |
+| `scripts\package.ps1` → `scripts\test-package.ps1 -Hardware` (`logicview-0.1.4-windows-x64.zip`) | 956개 파일, 풀면 56.4 MB, zip 22.3 MB. 7개 모두 통과 |
+| `extensions\tests\run-tests.ps1` (HLA 브리지) | 60개 모두 통과 |
+| 앱(UI Automation, `LOGICVIEW_APP_DB`는 임시 파일): 0.1.2 형식(`capture.rate` 4000000, `capture.samples` 2000000)으로 시작 | 시간 칸에 "0.5 초", 마우스를 올리면 "2,000,000 샘플 (4 MHz × 0.5초)" |
+| 같은 앱을 빈 파일로 시작 | 16 MHz, 1 초 (기본값) |
+
+Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, 창이 뜨고 UI Automation으로 요소가 보이는 것까지만
+확인했다.
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

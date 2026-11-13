@@ -283,8 +283,8 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 ## M5 배포 (2026-11-10)
 
 ```powershell
-.\scripts\package.ps1 -RuntimeDir C:\...\SLogicView-2.3.3-fx2lafw     # dist\logicview-0.1.3-windows-x64.zip
-.\scripts\test-package.ps1 -Zip dist\logicview-0.1.3-windows-x64.zip -Python <python.exe> [-Hardware]
+.\scripts\package.ps1 -RuntimeDir C:\...\SLogicView-2.3.3-fx2lafw     # dist\logicview-0.1.4-windows-x64.zip
+.\scripts\test-package.ps1 -Zip dist\logicview-0.1.4-windows-x64.zip -Python <python.exe> [-Hardware]
 ```
 
 - zip에는 다음이 들어 있다 (954개 파일, 풀면 56 MB, zip 22 MB).
@@ -451,6 +451,9 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 
 ## PRD와 다르게 한 것
 
+- 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는
+  Intel Iris Xe(드라이버 31.0.101.4255)에서 창 안이 하얗게만 나온 적이 있다(2026-11-13; 그날 오전에는 정상).
+  같은 때 OpenGL도 하얬고 DX12만 그려졌다. `WGPU_BACKEND=vulkan` 등으로 바꿀 수 있다.
 - UI-1: 도구 막대는 샘플 수 대신 수집 시간(초)을 고른다 (0.1, 0.5, 1, 2, 5, 10, 30, 60초, 수동 중지; 2026-11-13).
   샘플 수는 시작할 때 샘플레이트 × 시간으로 정한다. `app.db`의 키는 `capture.duration`(초 또는 `manual`)이고,
   0.1.2가 쓴 `capture.samples`만 있으면 기억한 샘플레이트로 나눠 시간으로 읽는다. `lvcli`와 MCP는 그대로 샘플 수·시간을 받는다.

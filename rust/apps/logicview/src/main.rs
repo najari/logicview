@@ -27,6 +27,7 @@ mod wave;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
+    prefer_dx12();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let mut path = None;
     let mut bench = false;
@@ -165,6 +166,21 @@ fn run_mcp(mode: &str, cfg: lv_mcp::Config, host: &str, port: u16) -> eframe::Re
         }
     }
 }
+
+/// Draw with Direct3D 12 on Windows unless `WGPU_BACKEND` says otherwise.
+/// wgpu would pick Vulkan first, and on an Intel Iris Xe the Vulkan window
+/// stayed white (nothing presented) while DX12 drew normally. DX12 is always
+/// there on Windows 10+ (with a software renderer when there is no GPU).
+#[cfg(windows)]
+fn prefer_dx12() {
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        // SAFETY: single-threaded here, before the window and wgpu start.
+        unsafe { std::env::set_var("WGPU_BACKEND", "dx12") };
+    }
+}
+
+#[cfg(not(windows))]
+fn prefer_dx12() {}
 
 /// The release build has no console; `--bench` prints, so borrow the
 /// console of the shell that started us.

@@ -187,7 +187,7 @@ impl Fx2lafw {
             ep.submit(buf);
         };
         stats.elapsed = started.elapsed();
-        stats.end = end;
+        let mut end = end;
 
         ep.cancel_all();
         while ep.pending() > 0 {
@@ -196,9 +196,17 @@ impl Fx2lafw {
                 break;
             }
         }
+        // WinUSB ends the transfers of an unplugged device with STALL, not
+        // "disconnected" (DEV-6): tell the two apart by asking the device.
+        if stalled && !self.is_alive() {
+            log::info!("{}: STALL, and the device no longer answers", self.location);
+            end = StreamEnd::Disconnected;
+            stalled = false;
+        }
         if stalled && let Err(e) = ep.clear_halt().wait() {
             log::warn!("clear halt failed: {e}");
         }
+        stats.end = end;
         Ok(stats)
     }
 }

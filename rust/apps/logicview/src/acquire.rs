@@ -1,18 +1,19 @@
 //! Capturing from the app (UI-1, UI-8): a background thread opens the
 //! device (uploading firmware if needed, which takes ~2 s), runs the capture
-//! and reports back over a channel. The opened device is kept for the next
-//! capture.
+//! and reports back over a channel. The opened device is kept for a capture
+//! started within a few seconds, then released ([`lv_fx2lafw::IDLE_RELEASE`]).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use lv_capture::{Capture, CaptureReport, CaptureRequest, Outcome, Progress};
-use lv_fx2lafw::{FoundDevice, Fx2lafw, StreamEnd};
+pub use lv_fx2lafw::DeviceSlot;
+use lv_fx2lafw::{FoundDevice, StreamEnd};
 
 pub enum Msg {
     /// Something to show while the device is being opened.
@@ -22,9 +23,6 @@ pub enum Msg {
     /// The capture ended (the file is closed).
     Finished(Result<Box<CaptureReport>, String>),
 }
-
-/// An opened device kept between captures.
-pub type DeviceSlot = Arc<Mutex<Option<Fx2lafw>>>;
 
 pub struct Session {
     pub rx: Receiver<Msg>,
@@ -103,8 +101,7 @@ fn run(
         let _ = tx.send(m);
         ctx.request_repaint();
     };
-    let cached = slot.lock().ok().and_then(|mut s| s.take());
-    let dev = match lv_fx2lafw::reuse(cached, &found) {
+    let dev = match lv_fx2lafw::reuse(slot.take(), &found) {
         Some(d) => d,
         None => {
             if !found.has_firmware {
@@ -120,7 +117,7 @@ fn run(
         }
     };
     if stop.load(Ordering::Relaxed) {
-        put_back(&slot, dev);
+        slot.put(dev);
         send(Msg::Finished(Err("시작하기 전에 중지했습니다".into())));
         return;
     }
@@ -143,7 +140,7 @@ fn run(
         thread::sleep(Duration::from_millis(20));
     }
     let (dev, report) = cap.wait();
-    // Keep the device unless it went away.
+    // Keep the device for a moment unless it went away.
     let gone = matches!(
         &report,
         Ok(r) if r.outcome == Outcome::DeviceError(StreamEnd::Disconnected)
@@ -151,15 +148,9 @@ fn run(
     if let Some(d) = dev
         && !gone
     {
-        put_back(&slot, d);
+        slot.put(d);
     }
     send(Msg::Finished(
         report.map(Box::new).map_err(|e| format!("수집 오류: {e}")),
     ));
-}
-
-fn put_back(slot: &DeviceSlot, dev: Fx2lafw) {
-    if let Ok(mut s) = slot.lock() {
-        *s = Some(dev);
-    }
 }

@@ -171,7 +171,9 @@ struct DeviceArgs {
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // nusb logs failed transfers as ERROR; lv-fx2lafw reports them itself.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,nusb=off"))
+        .init();
     if let Err(e) = run(Cli::parse()) {
         eprintln!("오류: {e:#}");
         std::process::exit(1);

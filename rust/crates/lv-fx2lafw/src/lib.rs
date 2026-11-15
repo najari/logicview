@@ -5,6 +5,7 @@
 
 mod device;
 pub mod protocol;
+mod slot;
 mod stream;
 
 use std::path::PathBuf;
@@ -14,6 +15,7 @@ pub use device::{
     open, reuse,
 };
 pub use protocol::SAMPLERATES;
+pub use slot::{DeviceSlot, IDLE_RELEASE, Kept};
 pub use stream::{StreamConfig, StreamEnd, StreamStats};
 
 #[derive(Debug, thiserror::Error)]

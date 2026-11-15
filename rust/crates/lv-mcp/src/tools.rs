@@ -11,12 +11,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lv_capture::{CaptureRequest, Outcome, Trigger};
 use lv_decode::{Control, StackEntry};
-use lv_fx2lafw::{FoundDevice, Fx2lafw, StreamEnd};
+use lv_fx2lafw::{FoundDevice, StreamEnd};
 use lv_store::{CaptureFile, CaptureWriter, NewCapture, Status};
 use serde_json::{Value, json};
 
-/// An opened device, shared with the app's own capturing.
-pub type DeviceSlot = Arc<Mutex<Option<Fx2lafw>>>;
+/// An opened device, shared with the app's own capturing. It is released
+/// a few seconds after the last capture so other programs can open it.
+pub use lv_fx2lafw::DeviceSlot;
 
 #[derive(Debug, Clone)]
 pub struct McpError {
@@ -65,7 +66,7 @@ impl Config {
         Config {
             data_dir,
             hla_script: find_hla_script(),
-            device_slot: Arc::new(Mutex::new(None)),
+            device_slot: DeviceSlot::default(),
         }
     }
 
@@ -1890,8 +1891,7 @@ fn run_capture(
     let dev_err = |e: String| McpError::new("DEVICE_ERROR", e);
     let path = req.output.clone();
     let trigger_mode = req.trigger.is_some();
-    let cached = slot.lock().ok().and_then(|mut s| s.take());
-    let dev = match lv_fx2lafw::reuse(cached, &found) {
+    let dev = match lv_fx2lafw::reuse(slot.take(), &found) {
         Some(d) => d,
         None => lv_fx2lafw::open(&found, &lv_fx2lafw::default_firmware_dirs())
             .map_err(|e| dev_err(format!("Opening the device failed: {e}")))?,
@@ -1909,9 +1909,8 @@ fn run_capture(
         || report.is_err();
     if let Some(d) = dev
         && !gone
-        && let Ok(mut s) = slot.lock()
     {
-        *s = Some(d);
+        slot.put(d);
     }
     let r = report.map_err(|e| dev_err(format!("Capture failed: {e}")))?;
     if r.outcome == Outcome::NotTriggered || r.info.num_samples == 0 {

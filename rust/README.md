@@ -481,6 +481,11 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
   패키지 목록(PRD의 `hla_package`)은 앱이 아니라 `extensions\hla.ps1`이 다루므로
   `%LOCALAPPDATA%\libsigrokdecode\saleae_compat\packages.json`에 둔다 (SLogicView와 함께 쓴다).
 
+- 앱과 MCP 서버는 연 장치를 다음 수집에 다시 쓰되, 수집 없이 5초가 지나면 놓는다 (`lv_fx2lafw::DeviceSlot`,
+  2026-11-15). 전에는 계속 쥐고 있어서 MCP로 한 번 수집한 뒤에는 앱·`lvcli`·PulseView가 장치를 열지 못했다.
+  펌웨어는 장치 RAM에 남으므로 다시 열 때 펌웨어를 올리지 않는다.
+- 로그: 기본 필터는 `warn,nusb=off`다. nusb는 실패한 전송을 ERROR로 남기는데(뽑았다 꽂은 뒤 남은 연결에 버전을
+  물을 때 등), lv-fx2lafw가 그 오류를 받아 처리하거나 알린다. nusb 로그가 필요하면 `RUST_LOG=warn,nusb=debug`.
 - CAP-6: 전송이 STALL로 끝나면 halt를 풀고 **수집을 거기서 끝낸다** (다시 큐에 넣으면 그 사이 샘플이 빠진
   캡처가 되기 때문). 이유는 결과에 "USB 파이프 STALL"로 알린다.
 - 장치가 펌웨어를 갖고 있는지는 문자열 대신 버전 요청(`0xB0`)에 답하는지로 판단한다. Windows에서는 제조사

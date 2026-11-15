@@ -78,7 +78,8 @@ MCP의 add_high_level_analyzer는 확장 폴더를 받아 알아서 설치한다
 - 24 MHz에서 "장치 버퍼가 넘쳐 데이터가 끊김": USB 포트가 속도를 못 따라간 것. 허브를 빼고 PC 본체
   포트에 꽂거나, 다른 본체 포트를 써 보거나, 16 MHz 이하로 수집한다.
 - "장치를 열 수 없습니다": 다른 프로그램(PulseView, SLogicView, 다른 logicview)이 장치를 쓰고 있지 않은지,
-  WinUSB 드라이버가 설치됐는지 확인한다.
+  WinUSB 드라이버가 설치됐는지 확인한다. logicview(앱과 MCP 서버)는 수집이 끝난 뒤 5초 동안 장치를
+  쥐고 있다가 놓으므로, 방금 수집한 직후라면 5초 뒤에 다시 해 본다.
 - 창 안이 하얗거나 비어 보임: 앱은 Direct3D 12로 그린다. 다른 방식으로 그리려면 환경 변수
   WGPU_BACKEND 를 vulkan 또는 gl 로 정하고 실행한다 (예: PowerShell에서 $env:WGPU_BACKEND='vulkan').
 

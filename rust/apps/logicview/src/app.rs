@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
@@ -188,7 +188,7 @@ impl App {
             dev_sel: 0,
             last_scan: None,
             scan_rx: None,
-            slot: Arc::new(Mutex::new(None)),
+            slot: DeviceSlot::default(),
             rate: 16_000_000,
             duration: Some(1.0),
             trigger_on: false,

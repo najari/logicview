@@ -489,6 +489,9 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
   펌웨어는 장치 RAM에 남으므로 다시 열 때 펌웨어를 올리지 않는다.
 - 로그: 기본 필터는 `warn,nusb=off`다. nusb는 실패한 전송을 ERROR로 남기는데(뽑았다 꽂은 뒤 남은 연결에 버전을
   물을 때 등), lv-fx2lafw가 그 오류를 받아 처리하거나 알린다. nusb 로그가 필요하면 `RUST_LOG=warn,nusb=debug`.
+  시험(2026-11-16, 0.1.6 패키지 MCP HTTP 서버, `RUST_LOG=warn,nusb=off,lv_fx2lafw=info,lv_mcp=info`, 0.5초마다
+  0.1초 수집): 뽑고 4.7초 만에 다시 꽂은 뒤 첫 수집에서 "kept handle is stale; opening again" → 펌웨어 올림 →
+  2.7초 만에 성공, 이어서 두 번 더 성공. 서버 로그에 nusb·ERROR·WARN 줄 없음. 5초 뒤 장치를 놓음.
 - CAP-6: 전송이 STALL로 끝나면 halt를 풀고 **수집을 거기서 끝낸다** (다시 큐에 넣으면 그 사이 샘플이 빠진
   캡처가 되기 때문). 이유는 결과에 "USB 파이프 STALL"로 알린다.
 - 장치가 펌웨어를 갖고 있는지는 문자열 대신 버전 요청(`0xB0`)에 답하는지로 판단한다. Windows에서는 제조사

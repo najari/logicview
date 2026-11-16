@@ -511,6 +511,16 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
 
 `test_mcp.py`의 `--server`는 절대 경로로 준다. 상대 경로는 서버를 띄우는 폴더에서 찾으므로 파일이 없다고 나온다.
 
+같은 날 `169a000`(README만 바뀜)에서 한 번 더 돌렸다.
+
+| 시험 | 결과 |
+| --- | --- |
+| build, fmt, clippy, `cargo test --release --workspace` | 경고 없음, 54개 모두 통과 |
+| `lvcli bench --rate 24M --samples 50M --runs 5` / `--rate 12M --runs 3` | **5/5** (2.091 s, 대기열 최대 0%, 마무리 15~19 ms) / 3/3 |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버 / Python 서버) | 64개 / 62개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
+| `scripts\package.ps1 -RuntimeDir <릴리스 앱> -NoBuild -OutDir <임시 폴더>` → `scripts\test-package.ps1 -Hardware` | 958개 파일, 풀면 56.6 MB, zip 22.3 MB. 7개 모두 통과 |
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

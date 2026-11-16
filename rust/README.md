@@ -493,6 +493,24 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
 | `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
 | `scripts\package.ps1` → `scripts\test-package.ps1 -Hardware` (`logicview-0.1.6-windows-x64.zip`) | 958개 파일, 풀면 56.6 MB, zip 22.3 MB. `extensions\decoders`에 manchester, rgb_led_async. 7개 모두 통과. 풀어 둔 패키지의 lvcli가 PATH에 Windows 폴더만 둔 채 `led.sr` 픽셀 5개 디코딩 |
 
+## 0.1.7 빌드·시험 (2026-11-16)
+
+`rust-v0.1.7`(`5354082`)을 같은 PC, 같은 포트 `usb/1-8`에서 다시 시험했다. 펌웨어는 올라가 있었다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release` | 성공, `lvcli --version`은 0.1.7 |
+| `cargo fmt --check`, `cargo clippy --workspace --all-targets` | 경고 없음 |
+| `cargo test --release --workspace` | 54개 모두 통과 |
+| `lvcli bench --rate 24M --samples 50M --runs 5` | **5/5**. 2.091 s, 대기열 최대 0%, 마무리 16~26 ms |
+| `lvcli bench --rate 12M --samples 50M --runs 3` | 3회 모두 통과 |
+| `mcp/tests/test_mcp.py --sigrok-cli <릴리스 앱>\sigrok-cli.exe --server <절대 경로>\logicview.exe --hardware` | 64개 모두 통과 |
+| 같은 시험을 Python 서버로 | 62개 모두 통과 |
+| `extensions\tests\run-tests.ps1` (HLA 브리지) | 71개 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` (릴리스한 `logicview-0.1.7-windows-x64.zip`, SHA-256 `741B96C7…0D29D10844D`) | 7개 모두 통과 |
+
+`test_mcp.py`의 `--server`는 절대 경로로 준다. 상대 경로는 서버를 띄우는 폴더에서 찾으므로 파일이 없다고 나온다.
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

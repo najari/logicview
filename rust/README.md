@@ -472,6 +472,27 @@ claude mcp add logicview -- <경로>\logicview.exe --mcp-stdio --sigrok-dir <런
 Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, 창이 뜨고 UI Automation으로 요소가 보이는 것까지만
 확인했다.
 
+## Logic 2 분석기 6개, Addressable LED, Manchester 옵션 (2026-11-16)
+
+- MCP `add_analyzer`가 Logic 2 분석기 이름 "LIN", "1-Wire", "Manchester", "I2S / PCM", "Simple Parallel",
+  "Addressable LEDs (Async)"를 더 받는다. 설정 이름과 고르는 값은 Saleae의 분석기 소스(`*AnalyzerSettings.cpp`)와
+  글자까지 같다. LIN은 `uart` 위에 `lin`, 1-Wire는 `onewire_link` 위에 `onewire_network`를 쌓고(프레임은 맨 위
+  디코더), 그 위의 HLA는 아래쪽 디코더를 읽는다. sigrok i2s가 하지 못하는 I2S 설정(하강 에지에서 읽기 등)은
+  고를 수 있는 값을 알려 주며 거절한다. Python MCP 서버도 같다.
+- `extensions\decoders`(manchester, rgb_led_async)를 실행 파일 옆이나 위 폴더에서 찾아 디코더 경로에 넣는다
+  (lv-decode `bundled_decoder_dir`). 앱의 디코더 창, lvcli, MCP 모두 환경 변수 없이 쓴다.
+- Addressable LED 디코더와 Manchester 옵션(첫 에지, 허용 오차)은 저장소 [README](../README.md#saleae-logic-2-확장hla-사용).
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release`, `cargo clippy --workspace --all-targets`, `cargo fmt --check` | 경고 없음 |
+| `cargo test --release --workspace` | 54개 모두 통과 (새로 Logic 2 분석기 표 검사: 이름마다 설정 제목이 겹치지 않고, 기본값이 고르는 값 안에 있고, HLA를 쌓을 수 있음) |
+| `lvcli decoders` / `lvcli decode led.sr -P rgb_led_async:din=D0:controller=WS2812B` (환경 변수 없이) | manchester, rgb_led_async가 목록에 있음 / 픽셀 5개 (`#0 R:255 G:0 B:0` … `#1 R:171 G:205 B:239`) |
+| `mcp/tests/test_mcp.py --server target\release\logicview.exe --hardware` | 64개 모두 통과 (새 분석기 6개와 그 위 HLA 20개 항목 포함) |
+| 같은 시험을 Python 서버로 | 62개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
+| `scripts\package.ps1` → `scripts\test-package.ps1 -Hardware` (`logicview-0.1.6-windows-x64.zip`) | 958개 파일, 풀면 56.6 MB, zip 22.3 MB. `extensions\decoders`에 manchester, rgb_led_async. 7개 모두 통과. 풀어 둔 패키지의 lvcli가 PATH에 Windows 폴더만 둔 채 `led.sr` 픽셀 5개 디코딩 |
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

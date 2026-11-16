@@ -152,6 +152,11 @@ enum Kind {
     Choices,
 }
 
+/// A Logic 2 analyzer setting. `target` is the sigrok option (or channel) of
+/// the decoder at `level` in the stack (0 = the bottom one); a target
+/// starting with `hla_` goes to HLAs stacked on the analyzer instead, and an
+/// empty target is accepted but not used (Logic 2 choices sigrok has only
+/// one way of).
 struct SettingDef {
     title: &'static str,
     kind: Kind,
@@ -159,6 +164,13 @@ struct SettingDef {
     default: SVal,
     choices: Vec<(String, SVal)>,
     required: bool,
+    level: usize,
+}
+
+impl SettingDef {
+    fn at(self, level: usize) -> SettingDef {
+        SettingDef { level, ..self }
+    }
 }
 
 fn chan(title: &'static str, target: &'static str, required: bool) -> SettingDef {
@@ -169,6 +181,7 @@ fn chan(title: &'static str, target: &'static str, required: bool) -> SettingDef
         default: SVal::Int(0),
         choices: Vec::new(),
         required,
+        level: 0,
     }
 }
 
@@ -180,7 +193,13 @@ fn integer(title: &'static str, target: &'static str, default: i64) -> SettingDe
         default: SVal::Int(default),
         choices: Vec::new(),
         required: false,
+        level: 0,
     }
+}
+
+/// A Logic 2 choice setting of which the sigrok decoder does only one.
+fn only(title: &'static str, text: &'static str) -> SettingDef {
+    choices(title, "", SVal::Str(text), &[(text, SVal::Str(text))])
 }
 
 fn choices(
@@ -196,6 +215,7 @@ fn choices(
         default,
         choices: list.iter().map(|(t, v)| (t.to_string(), *v)).collect(),
         required: false,
+        level: 0,
     }
 }
 
@@ -214,17 +234,69 @@ fn n_bits(lo: i64, hi: i64) -> Vec<(String, SVal)> {
 }
 
 struct Logic2 {
+    /// The bottom decoder (gets the channels) ...
     decoder: &'static str,
+    /// ... and the decoders stacked on it; frames come from the top one.
+    upper: &'static [&'static str],
+    /// Bridge input protocol for HLAs (they stack on the bottom decoder).
+    hla: &'static str,
     classes: &'static [&'static str],
     settings: Vec<SettingDef>,
+    /// At least one of these channels, or this message.
+    one_of: Option<(Vec<&'static str>, &'static str)>,
 }
 
-const LOGIC2_NAMES: [&str; 4] = ["Async Serial", "I2C", "SPI", "CAN"];
+const LOGIC2_NAMES: [&str; 10] = [
+    "Async Serial",
+    "I2C",
+    "SPI",
+    "CAN",
+    "LIN",
+    "1-Wire",
+    "Manchester",
+    "I2S / PCM",
+    "Simple Parallel",
+    "Addressable LEDs (Async)",
+];
+
+/// First-level sigrok decoders an HLA can stack on, and the bridge's input
+/// protocol for each.
+fn hla_input(decoder: &str) -> Option<&'static str> {
+    Some(match decoder {
+        "uart" => "uart",
+        "i2c" => "i2c",
+        "spi" => "spi",
+        "can" => "can",
+        "onewire_link" => "onewire",
+        "manchester" => "manchester",
+        "i2s" => "i2s",
+        "parallel" => "parallel",
+        "rgb_led_async" => "led",
+        _ => return None,
+    })
+}
+
+fn n_labels(lo: i64, hi: i64, label: impl Fn(i64) -> String) -> Vec<(String, SVal)> {
+    (lo..=hi).map(|n| (label(n), SVal::Int(n))).collect()
+}
 
 fn logic2(name: &str) -> Option<Logic2> {
     use SVal::*;
+    let plain = |decoder, classes, settings| Logic2 {
+        decoder,
+        upper: &[],
+        hla: hla_input(decoder).unwrap_or(decoder),
+        classes,
+        settings,
+        one_of: None,
+    };
+    // The settings of the analyzers after CAN are Logic 2's own (titles and
+    // choices as in Saleae's analyzer sources).
     Some(match name {
         "Async Serial" => Logic2 {
+            upper: &[],
+            hla: "uart",
+            one_of: None,
             decoder: "uart",
             classes: &[
                 "rx-data",
@@ -285,6 +357,9 @@ fn logic2(name: &str) -> Option<Logic2> {
             ],
         },
         "I2C" => Logic2 {
+            upper: &[],
+            hla: "i2c",
+            one_of: None,
             decoder: "i2c",
             classes: &[
                 "start",
@@ -299,6 +374,9 @@ fn logic2(name: &str) -> Option<Logic2> {
             settings: vec![chan("SDA", "sda", true), chan("SCL", "scl", true)],
         },
         "SPI" => Logic2 {
+            upper: &[],
+            hla: "spi",
+            one_of: None,
             decoder: "spi",
             classes: &["mosi-data", "miso-data", "warning"],
             settings: vec![
@@ -349,6 +427,9 @@ fn logic2(name: &str) -> Option<Logic2> {
             ],
         },
         "CAN" => Logic2 {
+            upper: &[],
+            hla: "can",
+            one_of: None,
             decoder: "can",
             classes: &[
                 "sof",
@@ -368,6 +449,187 @@ fn logic2(name: &str) -> Option<Logic2> {
                 integer("Bit Rate (Bits/s)", "nominal_bitrate", 1_000_000),
             ],
         },
+        "LIN" => Logic2 {
+            upper: &["lin"],
+            hla: "lin",
+            one_of: None,
+            decoder: "uart",
+            classes: &["data", "control", "error", "inline_error"],
+            settings: vec![
+                chan("Serial", "rx", true),
+                choices(
+                    "LIN Version",
+                    "version",
+                    Int(2),
+                    &[("Version 1.x", Int(1)), ("Version 2.x", Int(2))],
+                )
+                .at(1),
+                integer("Bit Rate (Bits/s)", "baudrate", 20000),
+            ],
+        },
+        "1-Wire" => Logic2 {
+            upper: &["onewire_network"],
+            hla: "onewire",
+            one_of: None,
+            decoder: "onewire_link",
+            classes: &["text"],
+            settings: vec![
+                chan("1-Wire", "owr", true),
+                choices(
+                    "Overdrive only mode",
+                    "overdrive",
+                    Str("no"),
+                    &[("false", Str("no")), ("true", Str("yes"))],
+                ),
+            ],
+        },
+        "Manchester" => plain(
+            "manchester",
+            &["word", "warning"],
+            vec![
+                chan("Manchester", "data", true),
+                choices(
+                    "Mode",
+                    "mode",
+                    Str("manchester"),
+                    &[
+                        ("Manchester", Str("manchester")),
+                        ("Differential Manchester", Str("differential")),
+                        ("Bi-Phase Mark Code (FM1)", Str("bi-phase mark")),
+                        ("Bi-Phase Space Code (FM0)", Str("bi-phase space")),
+                    ],
+                ),
+                integer("Bit Rate (Bits/s)", "bitrate", 1500),
+                choices(
+                    "Edge Polarity",
+                    "one_edge",
+                    Str("falling"),
+                    &[
+                        ("negative edge is binary one", Str("falling")),
+                        ("negative edge is binary zero", Str("rising")),
+                    ],
+                ),
+                SettingDef {
+                    choices: n_labels(1, 64, |n| {
+                        format!("{n} Bit{} per Transfer", if n == 1 { "" } else { "s" })
+                    }),
+                    ..choices("Bits Per Frame", "word_bits", Int(8), &[])
+                },
+                choices(
+                    "Significant Bit",
+                    "bit_order",
+                    Str("lsb-first"),
+                    &[
+                        ("Least Significant Bit Sent First", Str("lsb-first")),
+                        ("Most Significant Bit Sent First", Str("msb-first")),
+                    ],
+                ),
+                integer("Preamble bits to ignore", "skip_bits", 0),
+                choices(
+                    "Tolerance",
+                    "tolerance",
+                    Str("25%"),
+                    &[
+                        ("25% of period (default)", Str("25%")),
+                        ("5% of period", Str("5%")),
+                        ("0.5% of period", Str("0.5%")),
+                    ],
+                ),
+            ],
+        ),
+        "I2S / PCM" => plain(
+            "i2s",
+            &["left", "right", "warnings"],
+            vec![
+                chan("CLOCK channel", "sck", true),
+                chan("FRAME", "ws", true),
+                chan("DATA", "sd", true),
+                only("DATA Significant Bit", "Most Significant Bit Sent First"),
+                // sigrok i2s reads on the rising edge (Logic 2's default is falling).
+                only("CLOCK State", "Rising edge"),
+                // sigrok i2s finds the word length itself; this sets the sign bit for HLAs.
+                SettingDef {
+                    choices: n_labels(2, 64, |n| format!("{n} Bits/Word")),
+                    ..choices(
+                        "Audio Bit Depth (bits/sample)",
+                        "hla_i2s_bits",
+                        Int(16),
+                        &[],
+                    )
+                },
+                only(
+                    "FRAME Signal Transitions",
+                    "Once each word (I2S, PCM standard)",
+                ),
+                only("DATA Bits Alignment", "Left aligned"),
+                only("DATA Bits Shift", "Right-shifted by one (I2S typical)"),
+                choices(
+                    "Signed/Unsigned",
+                    "hla_i2s_signed",
+                    Str("no"),
+                    &[
+                        ("Unsigned", Str("no")),
+                        ("Signed (two's complement)", Str("yes")),
+                    ],
+                ),
+                only("Word Select High", "Channel 2 (right - I2S typical)"),
+            ],
+        ),
+        "Simple Parallel" => {
+            const DATA: [&str; 16] = [
+                "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12",
+                "D13", "D14", "D15",
+            ];
+            const IDS: [&str; 16] = [
+                "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "d10", "d11", "d12",
+                "d13", "d14", "d15",
+            ];
+            let mut settings: Vec<SettingDef> = DATA
+                .iter()
+                .zip(IDS)
+                .map(|(t, id)| chan(t, id, false))
+                .collect();
+            settings.push(chan("Clock", "clk", true));
+            settings.push(choices(
+                "Clock State",
+                "clock_edge",
+                Str("rising"),
+                &[
+                    ("Rising edge", Str("rising")),
+                    ("Falling edge", Str("falling")),
+                    ("Dual edge", Str("either")),
+                ],
+            ));
+            Logic2 {
+                one_of: Some((
+                    IDS.to_vec(),
+                    "Please select at least one channel to use in the parallel bus",
+                )),
+                ..plain("parallel", &["item", "warning"], settings)
+            }
+        }
+        "Addressable LEDs (Async)" => plain(
+            "rgb_led_async",
+            &["pixel", "reset", "warning"],
+            vec![
+                chan("LED Channel", "din", true),
+                choices(
+                    "LED Controller",
+                    "controller",
+                    Str("WS2811"),
+                    &[
+                        ("WS2811", Str("WS2811")),
+                        ("WS2812B", Str("WS2812B")),
+                        ("WS2813", Str("WS2813")),
+                        ("TM1809", Str("TM1809")),
+                        ("TM1804", Str("TM1804")),
+                        ("UCS1903", Str("UCS1903")),
+                        ("LPD1886 - 24 bit", Str("LPD1886-24")),
+                        ("LPD1886 - 36 bit", Str("LPD1886-36")),
+                    ],
+                ),
+            ],
+        ),
         _ => return None,
     })
 }
@@ -408,8 +670,6 @@ fn describe(defs: &[SettingDef], enabled: &[usize]) -> String {
 
 // ---- state ----------------------------------------------------------------------------
 
-const HLA_INPUTS: [&str; 4] = ["uart", "i2c", "spi", "can"];
-
 fn radix_format(r: i64) -> Option<&'static str> {
     match r {
         1 => Some("bin"),
@@ -442,6 +702,10 @@ struct Analyzer {
     frames: Vec<FrameRow>,
     input_id: Option<u64>,
     db_id: Option<i64>,
+    /// Bridge input protocol for HLAs on this analyzer (None: no HLAs).
+    hla: Option<String>,
+    /// Options for those HLAs (`hla_...`), from the analyzer's settings.
+    hla_args: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -1110,155 +1374,188 @@ impl Server {
             Ok(ch.to_string())
         };
 
-        let (decoder, args_list, classes): (String, Vec<(String, String)>, Option<Vec<String>>) =
-            if let Some(spec) = logic2(&name) {
-                let defs = &spec.settings;
-                let mut values: Vec<(&str, SVal)> = defs
-                    .iter()
-                    .filter(|d| d.kind != Kind::Channel)
-                    .map(|d| (d.target, d.default))
-                    .collect();
-                let mut chans: Vec<(&str, String)> = Vec::new();
-                let desc = describe(defs, &enabled);
-                for (key, entry) in &settings {
-                    let d = defs.iter().find(|d| d.title == key).ok_or_else(|| {
-                        invalid(format!(
-                            "Invalid setting name: {key}, available settings: {}\n{desc}",
-                            defs.iter()
-                                .map(|x| format!("\"{}\"", x.title))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ))
-                    })?;
-                    match d.kind {
-                        Kind::Channel => {
-                            let v =
-                                channel(key, entry.get("numberValue").filter(|v| !v.is_null()))?;
-                            chans.retain(|(t, _)| *t != d.target);
-                            chans.push((d.target, v));
-                        }
-                        Kind::Integer => {
-                            let n = entry.get("numberValue").and_then(Value::as_f64).ok_or_else(|| {
+        // (stack bottom first, table classes, HLA input protocol, HLA options)
+        type Built = (
+            Vec<StackEntry>,
+            Option<Vec<String>>,
+            Option<String>,
+            Vec<(String, String)>,
+        );
+        let (stack, classes, hla, hla_args): Built = if let Some(spec) = logic2(&name) {
+            let defs = &spec.settings;
+            let mut values: Vec<(usize, &str, SVal)> = defs
+                .iter()
+                .filter(|d| d.kind != Kind::Channel)
+                .map(|d| (d.level, d.target, d.default))
+                .collect();
+            let mut chans: Vec<(&str, String)> = Vec::new();
+            let desc = describe(defs, &enabled);
+            for (key, entry) in &settings {
+                let d = defs.iter().find(|d| d.title == key).ok_or_else(|| {
+                    invalid(format!(
+                        "Invalid setting name: {key}, available settings: {}\n{desc}",
+                        defs.iter()
+                            .map(|x| format!("\"{}\"", x.title))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ))
+                })?;
+                match d.kind {
+                    Kind::Channel => {
+                        let v = channel(key, entry.get("numberValue").filter(|v| !v.is_null()))?;
+                        chans.retain(|(t, _)| *t != d.target);
+                        chans.push((d.target, v));
+                    }
+                    Kind::Integer => {
+                        let n = entry.get("numberValue").and_then(Value::as_f64).ok_or_else(|| {
                                 invalid(format!(
                                     "Invalid value type for analyzer setting \"{key}\", expected number\n{desc}"
                                 ))
                             })?;
-                            if let Some(slot) = values.iter_mut().find(|(t, _)| *t == d.target) {
-                                slot.1 = SVal::Int(n as i64);
-                            }
+                        if let Some(slot) = values
+                            .iter_mut()
+                            .find(|(l, t, _)| *l == d.level && *t == d.target)
+                        {
+                            slot.2 = SVal::Int(n as i64);
                         }
-                        Kind::Choices => {
-                            let opt = if let Some(s) =
-                                entry.get("stringValue").and_then(Value::as_str)
-                            {
-                                d.choices
-                                    .iter()
-                                    .find(|(t, v)| t == s || v.py_str() == s)
-                                    .map(|c| c.1)
-                            } else if let Some(x) = entry.get("numberValue").and_then(Value::as_f64)
-                            {
-                                d.choices.iter().find(|(_, v)| v.eq_num(x)).map(|c| c.1)
-                            } else {
-                                None
-                            };
-                            let opt = opt.ok_or_else(|| {
+                    }
+                    Kind::Choices => {
+                        let opt = if let Some(s) = entry.get("stringValue").and_then(Value::as_str)
+                        {
+                            d.choices
+                                .iter()
+                                .find(|(t, v)| t == s || v.py_str() == s)
+                                .map(|c| c.1)
+                        } else if let Some(b) = entry.get("boolValue").and_then(Value::as_bool) {
+                            let text = if b { "true" } else { "false" };
+                            d.choices.iter().find(|(t, _)| t == text).map(|c| c.1)
+                        } else if let Some(x) = entry.get("numberValue").and_then(Value::as_f64) {
+                            d.choices.iter().find(|(_, v)| v.eq_num(x)).map(|c| c.1)
+                        } else {
+                            None
+                        };
+                        let opt = opt.ok_or_else(|| {
                                 invalid(format!(
                                     "Invalid value type for analyzer setting \"{key}\", expected one of {}\n{desc}",
                                     d.choices.iter().map(|(t, _)| format!("\"{t}\"")).collect::<Vec<_>>().join(", ")
                                 ))
                             })?;
-                            if let Some(slot) = values.iter_mut().find(|(t, _)| *t == d.target) {
-                                slot.1 = opt;
-                            }
+                        if let Some(slot) = values
+                            .iter_mut()
+                            .find(|(l, t, _)| *l == d.level && *t == d.target)
+                        {
+                            slot.2 = opt;
                         }
                     }
                 }
-                let missing: Vec<&str> = defs
-                    .iter()
-                    .filter(|d| {
-                        d.kind == Kind::Channel
-                            && d.required
-                            && !chans.iter().any(|c| c.0 == d.target)
-                    })
-                    .map(|d| d.title)
-                    .collect();
-                need(missing.is_empty(), "INVALID_REQUEST", || {
-                    format!(
-                        "Analyzer settings errors: \"Please select a channel for {}\"\n{desc}",
-                        missing.join(", ")
-                    )
-                })?;
-                let mut list: Vec<(String, String)> =
-                    chans.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-                for (k, v) in values {
-                    list.push((k.to_string(), v.spec()));
-                }
-                (
-                    spec.decoder.to_string(),
-                    list,
-                    Some(spec.classes.iter().map(|c| c.to_string()).collect()),
+            }
+            let missing: Vec<&str> = defs
+                .iter()
+                .filter(|d| {
+                    d.kind == Kind::Channel && d.required && !chans.iter().any(|c| c.0 == d.target)
+                })
+                .map(|d| d.title)
+                .collect();
+            need(missing.is_empty(), "INVALID_REQUEST", || {
+                format!(
+                    "Analyzer settings errors: \"Please select a channel for {}\"\n{desc}",
+                    missing.join(", ")
                 )
-            } else {
-                let rt = lv_decode::runtime().map_err(internal)?;
-                let info = rt
-                    .decoder(&name)
-                    .map_err(|_| invalid(format!("Unknown decoder \"{name}\"")))?;
+            })?;
+            if let Some((ids, message)) = &spec.one_of {
                 need(
-                    info.inputs.iter().any(|i| i == "logic"),
+                    chans.iter().any(|(t, _)| ids.contains(t)),
                     "INVALID_REQUEST",
-                    || {
-                        format!(
-                            "Analyzer \"{name}\" is not a first-level decoder (inputs: {}). Available Logic 2 analyzers: {}. Any sigrok decoder id with logic input also works.",
-                            info.inputs.join(", "),
-                            LOGIC2_NAMES.join(", ")
-                        )
-                    },
+                    || format!("Analyzer settings errors: \"{message}\"\n{desc}"),
                 )?;
-                let chan_ids: Vec<&str> = info
-                    .channels
-                    .iter()
-                    .chain(&info.opt_channels)
-                    .map(|c| c.id.as_str())
-                    .collect();
-                let opt_ids: Vec<&str> = info.options.iter().map(|o| o.id.as_str()).collect();
-                let mut list = Vec::new();
-                for (key, entry) in &settings {
-                    if chan_ids.contains(&key.as_str()) {
-                        list.push((
-                            key.clone(),
-                            channel(key, entry.get("numberValue").filter(|v| !v.is_null()))?,
-                        ));
-                    } else {
-                        need(opt_ids.contains(&key.as_str()), "INVALID_REQUEST", || {
-                            format!(
-                                "Invalid setting name: {key}. Channels: {}. Options: {}",
-                                chan_ids.join(", "),
-                                opt_ids.join(", ")
-                            )
-                        })?;
-                        let v = ["stringValue", "numberValue", "boolValue"]
-                            .iter()
-                            .find_map(|k| entry.get(*k).filter(|v| !v.is_null()))
-                            .ok_or_else(|| invalid(format!("Setting \"{key}\" has no value")))?;
-                        list.push((key.clone(), Self::spec_value(key, v)?));
-                    }
+            }
+            let mut stack: Vec<StackEntry> = std::iter::once(spec.decoder)
+                .chain(spec.upper.iter().copied())
+                .map(|id| StackEntry {
+                    id: id.to_string(),
+                    args: Vec::new(),
+                })
+                .collect();
+            stack[0].args = chans.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+            let mut hla_args = Vec::new();
+            for (level, k, v) in values {
+                if k.starts_with("hla_") {
+                    hla_args.push((k.to_string(), v.spec()));
+                } else if !k.is_empty() {
+                    stack[level].args.push((k.to_string(), v.spec()));
                 }
-                let missing: Vec<&str> = info
-                    .channels
-                    .iter()
-                    .map(|c| c.id.as_str())
-                    .filter(|c| !list.iter().any(|(k, _)| k == c))
-                    .collect();
-                need(missing.is_empty(), "INVALID_REQUEST", || {
-                    format!("Missing channel setting(s): {}", missing.join(", "))
-                })?;
-                (name.clone(), list, None)
-            };
-
-        let stack = vec![StackEntry {
-            id: decoder.clone(),
-            args: args_list,
-        }];
+            }
+            (
+                stack,
+                Some(spec.classes.iter().map(|c| c.to_string()).collect()),
+                Some(spec.hla.to_string()),
+                hla_args,
+            )
+        } else {
+            let rt = lv_decode::runtime().map_err(internal)?;
+            let info = rt
+                .decoder(&name)
+                .map_err(|_| invalid(format!("Unknown decoder \"{name}\"")))?;
+            need(
+                info.inputs.iter().any(|i| i == "logic"),
+                "INVALID_REQUEST",
+                || {
+                    format!(
+                        "Analyzer \"{name}\" is not a first-level decoder (inputs: {}). Available Logic 2 analyzers: {}. Any sigrok decoder id with logic input also works.",
+                        info.inputs.join(", "),
+                        LOGIC2_NAMES.join(", ")
+                    )
+                },
+            )?;
+            let chan_ids: Vec<&str> = info
+                .channels
+                .iter()
+                .chain(&info.opt_channels)
+                .map(|c| c.id.as_str())
+                .collect();
+            let opt_ids: Vec<&str> = info.options.iter().map(|o| o.id.as_str()).collect();
+            let mut list = Vec::new();
+            for (key, entry) in &settings {
+                if chan_ids.contains(&key.as_str()) {
+                    list.push((
+                        key.clone(),
+                        channel(key, entry.get("numberValue").filter(|v| !v.is_null()))?,
+                    ));
+                } else {
+                    need(opt_ids.contains(&key.as_str()), "INVALID_REQUEST", || {
+                        format!(
+                            "Invalid setting name: {key}. Channels: {}. Options: {}",
+                            chan_ids.join(", "),
+                            opt_ids.join(", ")
+                        )
+                    })?;
+                    let v = ["stringValue", "numberValue", "boolValue"]
+                        .iter()
+                        .find_map(|k| entry.get(*k).filter(|v| !v.is_null()))
+                        .ok_or_else(|| invalid(format!("Setting \"{key}\" has no value")))?;
+                    list.push((key.clone(), Self::spec_value(key, v)?));
+                }
+            }
+            let missing: Vec<&str> = info
+                .channels
+                .iter()
+                .map(|c| c.id.as_str())
+                .filter(|c| !list.iter().any(|(k, _)| k == c))
+                .collect();
+            need(missing.is_empty(), "INVALID_REQUEST", || {
+                format!("Missing channel setting(s): {}", missing.join(", "))
+            })?;
+            (
+                vec![StackEntry {
+                    id: name.clone(),
+                    args: list,
+                }],
+                None,
+                hla_input(&name).map(String::from),
+                Vec::new(),
+            )
+        };
+        let decoder = stack.last().map(|e| e.id.clone()).unwrap_or_default();
         let (frames, d) = self.decode(&cap, &stack)?;
         let aid = self.next_analyzer.fetch_add(1, Ordering::SeqCst);
         let label = arg_str(args, "analyzerLabel")
@@ -1275,6 +1572,8 @@ impl Server {
             frames,
             input_id: None,
             db_id: None,
+            hla,
+            hla_args,
         };
         an.db_id = self.store(&cap, &an, &d, None);
         cap.analyzers.lock().map_err(internal)?.insert(aid, an);
@@ -1423,17 +1722,14 @@ impl Server {
             .filter(|a| a.kind == "lla")
             .cloned()
             .ok_or_else(|| invalid(format!("Analyzer Id \"{input_id}\" does not exist.")))?;
-        need(
-            HLA_INPUTS.contains(&source.decoder.as_str()),
-            "INVALID_REQUEST",
-            || {
-                format!(
-                    "High level analyzers take Async Serial, I2C, SPI or CAN input, not \"{}\".",
-                    source.name
-                )
-            },
-        )?;
-        let decoder = self.install_hla(&ext_dir, &hla_name, &source.decoder)?;
+        let protocol = source.hla.clone().ok_or_else(|| {
+            invalid(format!(
+                "High level analyzers take {} input, not \"{}\".",
+                LOGIC2_NAMES.join(", "),
+                source.name
+            ))
+        })?;
+        let decoder = self.install_hla(&ext_dir, &hla_name, &protocol)?;
 
         let rt = lv_decode::runtime().map_err(internal)?;
         let info = rt
@@ -1490,7 +1786,9 @@ impl Server {
         {
             hla_args.push(("hla_spi_cs_polarity".into(), "active-high".into()));
         }
-        let mut stack = source.stack.clone();
+        hla_args.extend(source.hla_args.iter().cloned());
+        // The HLA reads the bottom decoder (uart for LIN, onewire_link for 1-Wire).
+        let mut stack = source.stack[..1].to_vec();
         stack.push(StackEntry {
             id: decoder.clone(),
             args: hla_args,
@@ -1520,6 +1818,8 @@ impl Server {
             frames,
             input_id: Some(input_id),
             db_id: None,
+            hla: None,
+            hla_args: Vec::new(),
         };
         an.db_id = self.store(&cap, &an, &d, source.db_id);
         cap.analyzers.lock().map_err(internal)?.insert(aid, an);
@@ -1990,5 +2290,40 @@ mod tests {
         assert!(text.contains("\"Bit Rate (Bits/s)\" (integer, default: 9600)"));
         assert!(text.contains("\"No Parity Bit (Standard)\" [default]"));
         assert!(text.contains("\"8 Bits per Transfer (Standard)\" [default]"));
+    }
+
+    #[test]
+    fn aut3_logic2_table_is_consistent() {
+        for name in LOGIC2_NAMES {
+            let d = logic2(name).unwrap_or_else(|| panic!("{name}"));
+            let mut titles: Vec<&str> = d.settings.iter().map(|s| s.title).collect();
+            titles.sort();
+            titles.dedup();
+            assert_eq!(titles.len(), d.settings.len(), "{name}: repeated title");
+            for s in &d.settings {
+                assert!(
+                    s.level <= d.upper.len(),
+                    "{name} {}: no decoder at level",
+                    s.title
+                );
+                if s.kind == Kind::Choices {
+                    assert!(
+                        s.choices.iter().any(|(_, v)| *v == s.default),
+                        "{name} {}: default not among the choices",
+                        s.title
+                    );
+                }
+            }
+            assert!(hla_input(d.decoder).is_some(), "{name}: HLAs cannot stack");
+        }
+        let lin = logic2("LIN").unwrap();
+        assert_eq!(
+            (lin.decoder, lin.upper, lin.hla),
+            ("uart", &["lin"][..], "lin")
+        );
+        let text = describe(&logic2("Manchester").unwrap().settings, &[0]);
+        assert!(text.contains("\"negative edge is binary one\" [default]"));
+        assert!(text.contains("\"1 Bit per Transfer\""));
+        assert!(text.contains("\"Least Significant Bit Sent First\" [default]"));
     }
 }

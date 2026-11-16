@@ -11,8 +11,11 @@ like Logic 2) or stdio (--stdio). Standard library only.
 
 Differences from Logic 2:
 - Captures are sigrok session files (.sr), not .sal.
-- Analyzers: "Async Serial", "I2C", "SPI", "CAN" with Logic 2 style settings,
-  or any sigrok decoder id with its own channel/option names.
+- Analyzers: "Async Serial", "I2C", "SPI", "CAN", "LIN", "1-Wire", "Manchester", "I2S / PCM", "Simple Parallel", "Addressable LEDs (Async)"
+  with Logic 2 style settings, or any sigrok decoder id with its own
+  channel/option names. Manchester and Addressable LEDs run logicview's own
+  decoders (extensions/decoders); I2S / PCM takes only the settings sigrok's
+  i2s decoder has (it reads on the rising clock edge).
 - Data table / legacy exports contain annotation text (one value column).
 - No analog channels, threshold voltage, glitch filter or pulse triggers
   (the hardware has none of these).
@@ -145,9 +148,16 @@ class SrData:
 # --- Analyzers -------------------------------------------------------------------
 
 class SettingDef:
-    def __init__(self, title, kind, target, default=None, choices=None, required=False):
+    """A Logic 2 analyzer setting. target is the sigrok option (or channel)
+    of the decoder at `level` in the stack (0 = the bottom one); a target
+    starting with hla_ goes to HLAs stacked on the analyzer instead, and an
+    empty target is accepted but not used (Logic 2 choices sigrok has only
+    one way of)."""
+
+    def __init__(self, title, kind, target, default=None, choices=None, required=False, level=0):
         self.title, self.kind, self.target = title, kind, target
         self.default, self.choices, self.required = default, choices or [], required
+        self.level = level
 
     def describe(self, channels):
         if self.kind == 'channel':
@@ -164,6 +174,11 @@ class SettingDef:
 
 def _n_bits(lo, hi):
     return [('{} Bits per Transfer{}'.format(n, ' (Standard)' if n == 8 else ''), n) for n in range(lo, hi + 1)]
+
+
+def _only(title, text):
+    """A Logic 2 choice setting of which the sigrok decoder does only one."""
+    return SettingDef(title, 'choices', '', text, [(text, text)])
 
 
 # Logic 2 analyzer names and settings, mapped onto sigrok decoders and options.
@@ -228,9 +243,99 @@ SALEAE_ANALYZERS = {
             SettingDef('Bit Rate (Bits/s)', 'integer', 'nominal_bitrate', 1000000),
         ],
     },
+    # The settings below are Logic 2's own (titles and choices as in Saleae's
+    # analyzer sources); HLAs stack on the bottom decoder through 'hla'.
+    'LIN': {
+        'decoder': 'uart', 'upper': ['lin'], 'hla': 'lin',
+        'classes': ['data', 'control', 'error', 'inline_error'],
+        'settings': [
+            SettingDef('Serial', 'channel', 'rx', required=True),
+            SettingDef('LIN Version', 'choices', 'version', 2,
+                       [('Version 1.x', 1), ('Version 2.x', 2)], level=1),
+            SettingDef('Bit Rate (Bits/s)', 'integer', 'baudrate', 20000),
+        ],
+    },
+    '1-Wire': {
+        'decoder': 'onewire_link', 'upper': ['onewire_network'], 'hla': 'onewire',
+        'classes': ['text'],
+        'settings': [
+            SettingDef('1-Wire', 'channel', 'owr', required=True),
+            SettingDef('Overdrive only mode', 'choices', 'overdrive', 'no',
+                       [('false', 'no'), ('true', 'yes')]),
+        ],
+    },
+    'Manchester': {
+        'decoder': 'manchester', 'hla': 'manchester',
+        'classes': ['word', 'warning'],
+        'settings': [
+            SettingDef('Manchester', 'channel', 'data', required=True),
+            SettingDef('Mode', 'choices', 'mode', 'manchester',
+                       [('Manchester', 'manchester'), ('Differential Manchester', 'differential'),
+                        ('Bi-Phase Mark Code (FM1)', 'bi-phase mark'),
+                        ('Bi-Phase Space Code (FM0)', 'bi-phase space')]),
+            SettingDef('Bit Rate (Bits/s)', 'integer', 'bitrate', 1500),
+            SettingDef('Edge Polarity', 'choices', 'one_edge', 'falling',
+                       [('negative edge is binary one', 'falling'),
+                        ('negative edge is binary zero', 'rising')]),
+            SettingDef('Bits Per Frame', 'choices', 'word_bits', 8,
+                       [('{} Bit{} per Transfer'.format(n, '' if n == 1 else 's'), n) for n in range(1, 65)]),
+            SettingDef('Significant Bit', 'choices', 'bit_order', 'lsb-first',
+                       [('Least Significant Bit Sent First', 'lsb-first'),
+                        ('Most Significant Bit Sent First', 'msb-first')]),
+            SettingDef('Preamble bits to ignore', 'integer', 'skip_bits', 0),
+            SettingDef('Tolerance', 'choices', 'tolerance', '25%',
+                       [('25% of period (default)', '25%'), ('5% of period', '5%'),
+                        ('0.5% of period', '0.5%')]),
+        ],
+    },
+    'I2S / PCM': {
+        'decoder': 'i2s', 'hla': 'i2s',
+        'classes': ['left', 'right', 'warnings'],
+        'settings': [
+            SettingDef('CLOCK channel', 'channel', 'sck', required=True),
+            SettingDef('FRAME', 'channel', 'ws', required=True),
+            SettingDef('DATA', 'channel', 'sd', required=True),
+            _only('DATA Significant Bit', 'Most Significant Bit Sent First'),
+            # sigrok i2s reads on the rising edge (Logic 2's default is falling).
+            _only('CLOCK State', 'Rising edge'),
+            # sigrok i2s finds the word length itself; this sets the sign bit for HLAs.
+            SettingDef('Audio Bit Depth (bits/sample)', 'choices', 'hla_i2s_bits', 16,
+                       [('{} Bits/Word'.format(n), n) for n in range(2, 65)]),
+            _only('FRAME Signal Transitions', 'Once each word (I2S, PCM standard)'),
+            _only('DATA Bits Alignment', 'Left aligned'),
+            _only('DATA Bits Shift', 'Right-shifted by one (I2S typical)'),
+            SettingDef('Signed/Unsigned', 'choices', 'hla_i2s_signed', 'no',
+                       [('Unsigned', 'no'), ("Signed (two's complement)", 'yes')]),
+            _only('Word Select High', 'Channel 2 (right - I2S typical)'),
+        ],
+    },
+    'Simple Parallel': {
+        'decoder': 'parallel', 'hla': 'parallel',
+        'classes': ['item', 'warning'],
+        'one_of': (['d{}'.format(i) for i in range(16)],
+                   'Please select at least one channel to use in the parallel bus'),
+        'settings': [SettingDef('D{}'.format(i), 'channel', 'd{}'.format(i)) for i in range(16)] + [
+            SettingDef('Clock', 'channel', 'clk', required=True),
+            SettingDef('Clock State', 'choices', 'clock_edge', 'rising',
+                       [('Rising edge', 'rising'), ('Falling edge', 'falling'), ('Dual edge', 'either')]),
+        ],
+    },
+    'Addressable LEDs (Async)': {
+        'decoder': 'rgb_led_async', 'hla': 'led',
+        'classes': ['pixel', 'reset', 'warning'],
+        'settings': [
+            SettingDef('LED Channel', 'channel', 'din', required=True),
+            SettingDef('LED Controller', 'choices', 'controller', 'WS2811',
+                       [(c, c) for c in ('WS2811', 'WS2812B', 'WS2813', 'TM1809', 'TM1804', 'UCS1903')] +
+                       [('LPD1886 - 24 bit', 'LPD1886-24'), ('LPD1886 - 36 bit', 'LPD1886-36')]),
+        ],
+    },
 }
 
-HLA_INPUTS = ('uart', 'i2c', 'spi', 'can')
+# First-level sigrok decoders an HLA can stack on (by id), and the bridge's
+# input protocol for each.
+HLA_INPUTS = {'uart': 'uart', 'i2c': 'i2c', 'spi': 'spi', 'can': 'can', 'onewire_link': 'onewire',
+              'manchester': 'manchester', 'i2s': 'i2s', 'parallel': 'parallel', 'rgb_led_async': 'led'}
 RADIX_FORMATS = {1: 'bin', 2: 'dec', 3: 'hex', 4: 'ascii'}
 _ANN = re.compile(r'^(\d+)-(\d+) ([^:]+): ([^:]+): ?(.*)$')
 
@@ -243,6 +348,8 @@ class Analyzer:
         self.classes = classes        # annotation classes for tables (None = all)
         self.frames = []              # (ss, es, class, text)
         self.input_id = None
+        self.hla_input = None         # bridge input protocol for HLAs on this analyzer
+        self.hla_args = []            # options passed to those HLAs (hla_...=v)
 
 
 class Capture:
@@ -279,6 +386,11 @@ class Logicview:
         self.next_capture = 1
         self.next_analyzer = 1
         self._decoder_info = {}
+        # Decoders sigrok does not have (manchester, rgb_led_async), next to hla.ps1.
+        extra = os.path.join(os.path.dirname(hla_script or ''), 'decoders')
+        if hla_script and os.path.isdir(extra):
+            shutil.copytree(extra, os.path.join(self.hla_root, 'decoders'), dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('__pycache__'))
 
     # -- helpers --
     def run_cli(self, args, timeout=600):
@@ -587,10 +699,12 @@ class Logicview:
                  'Invalid value type for analyzer setting "{}", channel "{}" is not enabled'.format(key, ch))
             return data.probe_name(ch)
 
+        hla_input, hla_args = None, []
         if name in SALEAE_ANALYZERS:
             spec = SALEAE_ANALYZERS[name]
             decoder, defs = spec['decoder'], spec['settings']
-            values = {d.target: d.default for d in defs if d.kind != 'channel'}
+            upper = spec.get('upper', [])
+            values = {(d.level, d.target): d.default for d in defs if d.kind != 'channel'}
             chans = {}
             describe = 'Settings:\n' + '\n'.join(d.describe(enabled) for d in defs)
             for key, entry in settings.items():
@@ -603,22 +717,33 @@ class Logicview:
                 elif d.kind == 'integer':
                     need(entry.get('numberValue') is not None, 'INVALID_REQUEST',
                          'Invalid value type for analyzer setting "{}", expected number\n{}'.format(key, describe))
-                    values[d.target] = int(entry['numberValue'])
+                    values[(d.level, d.target)] = int(entry['numberValue'])
                 else:
                     opt = None
                     if entry.get('stringValue') is not None:
                         opt = next((v for t, v in d.choices if t == entry['stringValue'] or str(v) == entry['stringValue']), None)
+                    elif entry.get('boolValue') is not None:
+                        opt = next((v for t, v in d.choices if t == ('true' if entry['boolValue'] else 'false')), None)
                     elif entry.get('numberValue') is not None:
                         opt = next((v for t, v in d.choices if v == entry['numberValue']), None)
                     need(opt is not None, 'INVALID_REQUEST', 'Invalid value type for analyzer setting "{}", '
                          'expected one of {}\n{}'.format(key, ', '.join('"{}"'.format(t) for t, _ in d.choices), describe))
-                    values[d.target] = opt
+                    values[(d.level, d.target)] = opt
             missing = [d.title for d in defs if d.kind == 'channel' and d.required and d.target not in chans]
             need(not missing, 'INVALID_REQUEST', 'Analyzer settings errors: "Please select a channel for {}"\n{}'.format(
                 ', '.join(missing), describe))
-            parts = ['{}={}'.format(k, v) for k, v in chans.items()]
-            parts += ['{}={}'.format(k, self.spec_value(k, v)) for k, v in values.items()]
+            if 'one_of' in spec:
+                need(any(t in chans for t in spec['one_of'][0]), 'INVALID_REQUEST',
+                     'Analyzer settings errors: "{}"\n{}'.format(spec['one_of'][1], describe))
+            levels = [['{}={}'.format(k, v) for k, v in chans.items()]] + [[] for _ in upper]
+            for (level, k), v in values.items():
+                if k.startswith('hla_'):
+                    hla_args.append('{}={}'.format(k, self.spec_value(k, v)))
+                elif k:
+                    levels[level].append('{}={}'.format(k, self.spec_value(k, v)))
+            parts = levels[0]
             classes = spec['classes']
+            hla_input = spec.get('hla', HLA_INPUTS.get(decoder))
         else:
             info = self.decoder_info(name)
             need('logic' in info['inputs'], 'INVALID_REQUEST',
@@ -641,10 +766,14 @@ class Logicview:
             missing = [c for c in info['required'] if not any(p.startswith(c + '=') for p in parts)]
             need(not missing, 'INVALID_REQUEST', 'Missing channel setting(s): {}'.format(', '.join(missing)))
             classes = None
-        specs = [':'.join([decoder] + parts)]
+            upper, levels = [], [parts]
+            hla_input = HLA_INPUTS.get(name)
+        specs = [':'.join([decoder] + parts)] + [':'.join([u] + levels[i]) for i, u in enumerate(upper, 1)]
+        top = upper[-1] if upper else decoder
         aid = self._new_analyzer_id()
-        an = Analyzer(aid, 'lla', name, args.get('analyzerLabel') or name, specs, decoder, classes)
-        an.frames = self.decode(cap, specs, decoder)
+        an = Analyzer(aid, 'lla', name, args.get('analyzerLabel') or name, specs, top, classes)
+        an.hla_input, an.hla_args = hla_input, hla_args
+        an.frames = self.decode(cap, specs, top)
         cap.analyzers[aid] = an
         return {'analyzerId': aid}
 
@@ -673,9 +802,11 @@ class Logicview:
         source = cap.analyzers.get(int(args['inputAnalyzerId']))
         need(source is not None and source.kind == 'lla', 'INVALID_REQUEST',
              'Analyzer Id "{}" does not exist.'.format(args['inputAnalyzerId']))
-        need(source.decoder in HLA_INPUTS, 'INVALID_REQUEST',
-             'High level analyzers take Async Serial, I2C, SPI or CAN input, not "{}".'.format(source.name))
-        decoder = self.install_hla(ext_dir, hla_name, source.decoder)
+        need(source.hla_input is not None, 'INVALID_REQUEST',
+             'High level analyzers take {} input, not "{}".'.format(
+                 ', '.join(n for n, sp in SALEAE_ANALYZERS.items() if sp.get('hla', sp['decoder']) in
+                           HLA_INPUTS.values()), source.name))
+        decoder = self.install_hla(ext_dir, hla_name, source.hla_input)
 
         info = self.decoder_info(decoder)
         option_ids = [o for o in info['options'] if not o.startswith('hla_')]
@@ -694,7 +825,9 @@ class Logicview:
             parts.append('{}={}'.format(opt, self.spec_value(key, value)))
         if source.decoder == 'spi' and 'cs_polarity=active-high' in source.specs[0]:
             parts.append('hla_spi_cs_polarity=active-high')
-        specs = source.specs + [':'.join([decoder] + parts)]
+        parts += source.hla_args
+        # The HLA reads the bottom decoder (uart for LIN, onewire_link for 1-Wire).
+        specs = source.specs[:1] + [':'.join([decoder] + parts)]
         frames = self.decode(cap, specs, decoder)
         init_error = next((f for f in frames if f[2] == 'error' and
                            (f[3].startswith('Setting:') or f[3].startswith('HLA init failed'))), None)
@@ -958,7 +1091,7 @@ TOOLS = [
     ('close_capture', 'Close a capture and free resources', {'captureId': _num('Capture ID to close')}, ['captureId']),
     ('add_analyzer', 'Add a protocol analyzer to a capture and decode it', {
         'captureId': _num('Capture ID to add analyzer to'),
-        'analyzerName': {'description': 'Logic 2 analyzer name ("Async Serial", "I2C", "SPI", "CAN") or any '
+        'analyzerName': {'description': 'Logic 2 analyzer name ("Async Serial", "I2C", "SPI", "CAN", "LIN", "1-Wire", "Manchester", "I2S / PCM", "Simple Parallel", "Addressable LEDs (Async)") or any '
                                         'sigrok decoder id with logic input (e.g. "onewire_link", "ir_nec")',
                          'type': 'string'},
         'analyzerLabel': {'description': 'User-facing label for the analyzer', 'type': 'string'},
@@ -967,8 +1100,8 @@ TOOLS = [
                      '$ref': '#/definitions/AnalyzerSettings'}}, ['analyzerName', 'captureId']),
     ('remove_analyzer', 'Remove a protocol analyzer from a capture', {
         'captureId': CAPTURE_ID, 'analyzerId': _num('Analyzer ID to remove')}, ['analyzerId', 'captureId']),
-    ('add_high_level_analyzer', 'Add a Saleae Logic 2 high-level analyzer extension (HLA) on top of an '
-                                'Async Serial, I2C, SPI or CAN analyzer', {
+    ('add_high_level_analyzer', 'Add a Saleae Logic 2 high-level analyzer extension (HLA) on top of '
+                                'an Async Serial, I2C, SPI, CAN, LIN, 1-Wire, Manchester, I2S / PCM, Simple Parallel or Addressable LEDs (Async) analyzer', {
         'captureId': CAPTURE_ID,
         'extensionDirectory': {'description': 'Path to the extension directory (with extension.json)',
                                'type': 'string'},

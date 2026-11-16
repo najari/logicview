@@ -15,6 +15,23 @@ class SamplerateError(Exception):
 
 
 MODES = ('manchester', 'differential', 'bi-phase mark', 'bi-phase space')
+FIRST_EDGE = ('auto', 'mid-bit', 'bit boundary')
+# Allowed edge timing error as a fraction of the bit period (Logic 2's
+# Manchester "Tolerance": 25% of the period = half a half-bit cell).
+TOLERANCE = {'25%': 0.25, '5%': 0.05, '0.5%': 0.005}
+
+
+def timing_errors(edges, half, tolerance):
+    """(sample, error as a fraction of the bit period) for each edge whose
+    interval from the previous edge is off its 1 or 2 half-bit cells by
+    more than tolerance."""
+    out = []
+    for (s, _), (t, _) in zip(edges, edges[1:]):
+        n = min(2, max(1, int(round((t - s) / half))))
+        err = abs((t - s) - n * half) / (2 * half)
+        if err > tolerance:
+            out.append((t, err))
+    return out
 
 
 def cells_from_edges(edges, half):
@@ -32,11 +49,15 @@ def cells_from_edges(edges, half):
     return cells
 
 
-def align(cells, edges, half, mode):
+def align(cells, edges, half, mode, first_edge='auto'):
     """Put the missing first half in front when the burst starts in the
-    middle of a bit, so that cells[0] starts a bit."""
+    middle of a bit, so that cells[0] starts a bit. first_edge 'mid-bit' or
+    'bit boundary' says where the first edge of a burst is; 'auto' takes it
+    from the first full-bit interval."""
     first_long = next((i for i, c in enumerate(cells) if c[2] == 'long'), None)
-    if first_long is None:
+    if first_edge != 'auto':
+        starts_mid = first_edge == 'mid-bit'
+    elif first_long is None:
         # No full-bit interval: Manchester codes start on a mid-bit edge,
         # bi-phase codes on a bit boundary.
         starts_mid = not mode.startswith('bi-phase')
@@ -102,6 +123,10 @@ class Decoder(srd.Decoder):
          'values': ('msb-first', 'lsb-first')},
         {'id': 'skip_bits', 'desc': 'Leading bits to skip in each burst',
          'default': 0},
+        {'id': 'first_edge', 'desc': 'First edge of a burst',
+         'default': 'auto', 'values': FIRST_EDGE},
+        {'id': 'tolerance', 'desc': 'Edge timing tolerance (of the bit period)',
+         'default': '25%', 'values': tuple(TOLERANCE)},
     )
     annotations = (
         ('bit', 'Bit'),
@@ -130,7 +155,11 @@ class Decoder(srd.Decoder):
 
     def burst(self, edges, half):
         mode = self.options['mode']
-        cells = align(cells_from_edges(edges, half), edges, half, mode)
+        for t, err in timing_errors(edges, half, TOLERANCE.get(self.options['tolerance'], 0.25)):
+            self.put(t, t, self.out_ann, [2, [
+                'Edge {:.0f}% of a bit off'.format(100 * err), 'Timing', 'T']])
+        cells = align(cells_from_edges(edges, half), edges, half, mode,
+                      self.options['first_edge'])
         bits = bits_from_cells(cells, half, mode,
                                self.options['one_edge'] == 'rising',
                                1 - edges[0][1])

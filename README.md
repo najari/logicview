@@ -40,7 +40,7 @@ cd rust
 | `extensions/hla.ps1` | Saleae Logic 2 HLA 확장을 SLogicView 디코더로 설치·목록·삭제, HLA가 쓰는 Python 패키지 추가 ([아래](#saleae-logic-2-확장hla-사용)) |
 | `extensions/compat/` | Logic 2 확장 API 호환 계층: `saleae` 모듈(API 대체 구현) + `saleae_bridge.py`(sigrok 디코더 ↔ HLA 변환) |
 | `extensions/template/` | 확장마다 만들어지는 디코더 패키지의 `__init__.py`, `pd.py` |
-| `extensions/decoders/manchester/` | Manchester·Bi-phase 디코더 (sigrok에 없어서, Manchester 입력 HLA용으로 함께 설치) |
+| `extensions/decoders/` | sigrok에 없는 디코더: `manchester`(Manchester·Bi-phase), `rgb_led_async`(Addressable LED). HLA 설치 때 함께 설치하고, Rust 앱·lvcli·MCP는 이 폴더를 바로 찾는다 |
 | `extensions/tests/` | 테스트 HLA 8개, numpy HLA(`hla-packages/`), 단위 테스트(`run-tests.ps1`), 합성 캡처·세션 생성기(`make-capture.py`, `make-capture-more.py`) |
 | `build-sigrok-cli.sh` | 같은 SLogic 커밋의 libsigrokdecode + sigrok-cli 빌드 (MCP 서버용, MSYS2 UCRT64) |
 | `sigrok-cli-patches/0001-windows-1ms-timer-resolution.patch` | sigrok-cli가 Windows 타이머 해상도를 1 ms로 올림. 기본 15.6 ms에서는 USB 이벤트 처리가 밀려 24 MHz 수집이 끊김 |
@@ -148,8 +148,8 @@ USB 허브 없이 PC 본체 포트에 직접 꽂을 것 (허브 경유라면 16 
 Logic 2의 High Level Analyzer(HLA) 확장을 SLogicView에서 디코더로 쓸 수 있다.
 `extensions/hla.ps1`이 확장을 libsigrokdecode의 사용자 디코더 폴더
 (`%LOCALAPPDATA%\libsigrokdecode\decoders`)에 디코더로 등록하고, 호환 계층이
-sigrok 디코더(uart, i2c, spi, can, onewire_link, i2s, parallel)와 함께 설치하는 manchester
-디코더의 출력을 Logic 2 분석기와 같은 프레임으로 바꿔 HLA에 넘긴다. HLA가 돌려준 프레임은 SLogicView 주석으로 표시된다. 앱 파일은 건드리지 않는다.
+sigrok 디코더(uart, i2c, spi, can, onewire_link, i2s, parallel)와 함께 설치하는 manchester,
+rgb_led_async 디코더의 출력을 Logic 2 분석기와 같은 프레임으로 바꿔 HLA에 넘긴다. HLA가 돌려준 프레임은 SLogicView 주석으로 표시된다. 앱 파일은 건드리지 않는다.
 
 ```powershell
 # GitHub 저장소 주소, 확장 폴더(extension.json이 있는 곳), zip 파일 모두 가능
@@ -175,9 +175,10 @@ UART 디코더에 쌓아도 된다. HLA 설정은 디코더 옵션으로 나온�
 | Manchester | `manchester` (함께 설치) | `data` (`data`) |
 | I2S / PCM | `i2s` | `data` (`channel`, `data`) |
 | Simple Parallel | `parallel` | `data` (`data`) |
+| Addressable LEDs (Async) | `rgb_led_async` (함께 설치) | `pixel` (`index`, `red`, `green`, `blue`) |
 
 프레임 종류와 키는 Saleae의 [frame format reference](https://www.saleae.com/support/extensions-api/hla-frame-format-reference/analyzer-frame-types)를 따른다.
-`-Protocol`에 쓰는 이름은 `uart`, `i2c`, `spi`, `can`, `lin`, `onewire`, `manchester`, `i2s`, `parallel`이다.
+`-Protocol`에 쓰는 이름은 `uart`, `i2c`, `spi`, `can`, `lin`, `onewire`, `manchester`, `i2s`, `parallel`, `led`이다.
 
 `-Protocol auto`(기본값)는 HLA 코드가 확인하는 프레임 종류와, 이름·설명·README·주석에
 나오는 분석기 이름으로 입력 프로토콜을 고른다. 여러 개면 프로토콜마다 디코더를 하나씩
@@ -202,10 +203,16 @@ UART 디코더에 쌓아도 된다. HLA 설정은 디코더 옵션으로 나온�
   IEEE 802.3·G.E. Thomas Manchester, 차동 Manchester, Bi-phase Mark·Space와 비트레이트, 워드 비트 수,
   비트 순서, 앞에서 건너뛸 비트 수를 옵션으로 고른다. 비트 경계는 버스트 안의 첫 "한 비트 길이"
   간격으로 맞추고, 그런 간격이 없으면(예: 같은 비트만 계속) 첫 에지를 Manchester는 비트 중간,
-  Bi-phase는 비트 경계로 본다.
-- I2S / PCM: sigrok i2s는 원래 워드를 넘기므로, 부호는 옵션 `hla_i2s_format`
-  (`unsigned`, `signed-8`…`signed-32`)으로 정한다.
-- Async RGB LED(`pixel`)는 sigrok의 rgb_led_ws281x가 Python 출력을 내지 않아 아직 없다.
+  Bi-phase는 비트 경계로 본다. 같은 비트만 보내는 신호는 옵션 `First edge of a burst`
+  (`auto`, `mid-bit`, `bit boundary`)로 정해 준다. 옵션 `Edge timing tolerance`(Logic 2와 같은
+  25%·5%·0.5%, 비트 주기 기준)를 넘는 에지는 경고로 표시한다.
+- I2S / PCM: sigrok i2s는 원래 워드를 넘기므로, 부호는 옵션 `hla_i2s_signed`(`no`, `yes`)와
+  `hla_i2s_bits`(비트 수, 기본 16)로 정한다.
+- Addressable LEDs (Async): sigrok의 rgb_led_ws281x는 Python 출력을 내지 않아서
+  `extensions/decoders/rgb_led_async`를 함께 설치한다. Logic 2 분석기와 같은 컨트롤러 8가지
+  (WS2811, WS2812B, WS2813, TM1809, TM1804, UCS1903, LPD1886 24/36비트)의 타이밍 표와 판정 규칙
+  (리셋 뒤 첫 비트로 저속·고속 결정, 이후 High 시간으로 0/1, Low 시간 확인, 틀리면 다음 리셋까지 대기)을
+  Saleae 소스에서 옮겼다. 색 값은 줄이지 않은 원래 값이다(LPD1886 36비트는 0–4095).
 - HLA의 `print()` 출력은 `%LOCALAPPDATA%\libsigrokdecode\saleae_compat\hla.log`에 쌓인다.
   환경 변수 `SALEAE_HLA_TRACE=1`로 앱을 실행하면 HLA가 낸 프레임도 기록된다.
 
@@ -235,8 +242,8 @@ UART 디코더에 쌓아도 된다. HLA 설정은 디코더 옵션으로 나온�
 ```powershell
 # 테스트 HLA 8개를 임시 폴더에 설치하고 단위 테스트 실행 (MSYS2 Python 3.14 사용)
 .\extensions\tests\run-tests.ps1
-# LIN, 1-Wire, Manchester, I2S, Parallel 합성 캡처 (앱의 sigrok-cli나 lvcli decode로 확인)
-C:\msys64\ucrt64\bin\python.exe -I .\extensions\tests\make-capture-more.py more.sr
+# LIN, 1-Wire, Manchester, I2S, Parallel 합성 캡처와 WS2812B 캡처 (앱의 sigrok-cli나 lvcli decode로 확인)
+C:\msys64\ucrt64\bin\python.exe -I .\extensions\tests\make-capture-more.py more.sr led.sr
 # 실제 앱 확인: 테스트 HLA를 사용자 폴더에 설치 → 합성 캡처와 세션 생성 → 열기
 Get-ChildItem .\extensions\tests\hlas -Directory | ForEach-Object { .\extensions\hla.ps1 install $_.FullName }
 C:\msys64\ucrt64\bin\python.exe -I .\extensions\tests\make-capture.py test.sr test.pvs
@@ -256,6 +263,16 @@ HLA 예외는 오류 주석으로, 옛 API 확장은 불러오기 오류로만 �
 | 같은 캡처를 Rust `lvcli decode`(lv-decode)로 | 위와 같은 프레임 |
 | `package add numpy` (MSYS2 2.5.4, 930개 파일, DLL 7개) 뒤 `tests/hla-packages/numpy-mean` HLA를 앱의 sigrok-cli로 (PATH는 Windows 시스템 폴더만) | "Hi" 평균 88.5, "ok!" 평균 83.67. 패키지 없는 폴더에서는 `No module named 'numpy'` |
 | `package add crc` (PyPI 8.0.0) → `list` → `remove` | 지운 뒤 `site-packages`, `bin`에 남은 파일 없음 (`__pycache__` 포함). Windows PowerShell 5.1과 PowerShell 7 모두 |
+
+결과 (2026-11-16, Addressable LED 입력, Manchester 옵션, MCP 분석기 6개):
+
+| 시험 | 결과 |
+|---|---|
+| `run-tests.ps1` | 71개 통과 (LED 어댑터, 컨트롤러 판정 규칙·속도 감지·색 순서, I2S 12비트 부호, Manchester 첫 에지·허용 오차 포함) |
+| 앱의 sigrok-cli로 `led.sr`(WS2812B 20 MHz)을 `rgb_led_async`와 `frame-echo` HLA로 | `#0 R:255 G:0 B:0`, `#1 R:0 G:255 B:0`, `#2 R:0 G:0 B:255`, 리셋 뒤 `#0 R:18 G:52 B:86`, `#1 R:171 G:205 B:239`. HLA는 `pixel: index=0, red=255, green=0, blue=0` 등 5개. 컨트롤러를 WS2811로 잘못 고르면 "No valid first bit after the reset" |
+| 같은 캡처를 `lvcli decode`로 (환경 변수 없이) | 위와 같은 픽셀, `extensions\decoders`를 저절로 찾음 |
+| Manchester `tolerance=0.5%` / `first_edge=bit boundary` (이 캡처에는 틀린 값) | 0xA5, 0x3C 그대로 / "No mid-bit transition" 경고 |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버 / Python 서버) | 64개 / 62개 통과. 새 분석기 6개를 Logic 2 설정 이름으로 추가하고 그 위에 HLA, 지원하지 않는 I2S 설정·데이터 채널 없는 Parallel·없는 LED 컨트롤러는 오류 |
 
 ## MCP 서버
 
@@ -277,7 +294,7 @@ claude mcp add logicview -- "<앱 폴더>\python.exe" -I "<앱 폴더>\mcp\logic
 | `start_capture` | 디지털 채널, 샘플레이트, 수동/시간 지정/에지 트리거 모드로 캡처 시작 |
 | `stop_capture`, `wait_capture` | 캡처 중지(정상 종료), 끝날 때까지 대기 |
 | `load_capture`, `save_capture`, `close_capture` | sigrok 세션 파일(.sr) 열기·저장, 캡처 닫기 |
-| `add_analyzer`, `remove_analyzer` | "Async Serial", "I2C", "SPI", "CAN"(Logic 2 설정 이름) 또는 sigrok 디코더 id로 디코딩 |
+| `add_analyzer`, `remove_analyzer` | Logic 2 분석기 이름("Async Serial", "I2C", "SPI", "CAN", "LIN", "1-Wire", "Manchester", "I2S / PCM", "Simple Parallel", "Addressable LEDs (Async)")과 Logic 2 설정 이름, 또는 sigrok 디코더 id로 디코딩 |
 | `add_high_level_analyzer`, `remove_high_level_analyzer` | Logic 2 HLA 확장 폴더를 지정해 분석기 위에 실행 |
 | `export_raw_data_csv`, `export_raw_data_binary` | 원시 데이터를 CSV(변화 시점마다 한 줄) 또는 Logic 2 바이너리 형식(`digital_N.bin`)으로 |
 | `export_data_table_csv`, `legacy_export_analyzer` | 디코딩 결과를 CSV로 (필터, 열 선택, 진법 지원) |
@@ -288,6 +305,14 @@ Logic 2와 다른 점:
 - 아날로그 채널, 임계 전압, 글리치 필터, 펄스 폭 트리거는 하드웨어에 없어서 오류로 알린다.
   에지 트리거는 상승/하강 + 다른 채널 레벨 조건을 지원하고 10 %는 트리거 이전 데이터다.
 - 데이터 테이블 CSV는 `name, type, start_time, duration, value` 열이다 (값은 디코더가 표시하는 글자).
+- LIN은 uart 위에 lin, 1-Wire는 onewire_link 위에 onewire_network를 쌓아 디코딩하고, 그 위의 HLA는
+  아래쪽 디코더(uart, onewire_link)를 읽는다. Manchester와 Addressable LEDs (Async)는 logicview의
+  디코더(`extensions/decoders`)로 디코딩한다.
+- I2S / PCM은 sigrok i2s가 하는 방식만 받는다: 상승 에지에서 읽기, MSB 먼저, 워드마다 FRAME 한 번,
+  왼쪽 정렬, 한 비트 늦춤, Word Select High = 오른쪽 채널. 다른 값을 주면 고를 수 있는 값을 알려 준다
+  (Logic 2의 `CLOCK State` 기본값은 하강 에지). `Audio Bit Depth`와 `Signed/Unsigned`는 그 위 HLA가 받는
+  값의 부호를 정한다.
+- 1-Wire의 `Overdrive only mode`는 Logic 2에서 제목 없는 체크 상자라서 이 이름(`boolValue`)으로 받는다.
 - 캡처를 시작하면 장치를 여는 데 약 0.6초가 걸린 뒤 데이터가 들어온다.
 - SLogicView가 장치를 열어 둔 동안에는 캡처할 수 없다 (파일 분석은 가능).
 - 캡처와 설치된 HLA는 `%LOCALAPPDATA%\logicview\mcp`에 둔다.

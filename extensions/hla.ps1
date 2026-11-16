@@ -10,8 +10,8 @@ PulseView protocol decoders.
   .\hla.ps1 package remove <name>
 
 Protocols: uart, i2c, spi, can, lin (on uart), onewire (on onewire_link),
-manchester (on the manchester decoder installed with the bridge), i2s,
-parallel.
+manchester and led (on the manchester and rgb_led_async decoders installed with
+the bridge), i2s, parallel.
 
 Each HLA becomes one decoder per input protocol, hla_<extension>_<protocol>,
 in libsigrokdecode's per-user decoder directory
@@ -34,7 +34,7 @@ param(
     [string]$Source,
     [Parameter(Position = 2, ValueFromRemainingArguments)]
     [string[]]$Names,
-    [ValidateSet('auto', 'all', 'uart', 'i2c', 'spi', 'can', 'lin', 'onewire', 'manchester', 'i2s', 'parallel')]
+    [ValidateSet('auto', 'all', 'uart', 'i2c', 'spi', 'can', 'lin', 'onewire', 'manchester', 'i2s', 'parallel', 'led')]
     [string[]]$Protocol = @('auto'),
     [ValidateSet('auto', 'msys2', 'pypi')]
     [string]$From = 'auto',
@@ -46,17 +46,19 @@ param(
 $ErrorActionPreference = 'Stop'
 $Decoders = Join-Path $Root 'decoders'
 $CompatDest = Join-Path $Root 'saleae_compat'
-$AllProtocols = 'uart', 'i2c', 'spi', 'can', 'lin', 'onewire', 'manchester', 'i2s', 'parallel'
+$AllProtocols = 'uart', 'i2c', 'spi', 'can', 'lin', 'onewire', 'manchester', 'i2s', 'parallel', 'led'
 # Installed when the HLA gives no hint of its input.
 $DefaultProtocols = 'uart', 'i2c', 'spi', 'can'
 $Labels = @{
     uart = 'Async Serial'; i2c = 'I2C'; spi = 'SPI'; can = 'CAN'; lin = 'LIN'
     onewire = '1-Wire'; manchester = 'Manchester'; i2s = 'I2S / PCM'; parallel = 'Simple Parallel'
+    led = 'Addressable LEDs (Async)'
 }
 # The sigrok decoder each input stacks on (saleae_bridge.INPUTS).
 $Lower = @{
     uart = 'uart'; i2c = 'i2c'; spi = 'spi'; can = 'can'; lin = 'uart'
     onewire = 'onewire_link'; manchester = 'manchester'; i2s = 'i2s'; parallel = 'parallel'
+    led = 'rgb_led_async'
 }
 
 function Write-Utf8([string]$Path, [string]$Text) {
@@ -122,6 +124,7 @@ function Find-Protocols([string]$Dir, $Json) {
     if ($code -match "['""]address['""]" -or $code -match "==\s*['""](start|stop)['""]") { $found.i2c = 1 }
     if ($code -match "['""](header_break|header_sync|header_pid|data_or_checksum|protected_id)['""]") { $found.lin = 1 }
     if ($code -match "['""](rom_command|family_code|invalid_rom_command)['""]") { $found.onewire = 1 }
+    if ($code -match "['""]pixel['""]") { $found.led = 1 }
     $text = "$($Json.name) $($Json.description) $code"
     $readme = Get-ChildItem -LiteralPath $Dir -File -Filter 'README*' | Select-Object -First 1
     if ($readme) { $text += ' ' + (Get-Content -Raw -LiteralPath $readme.FullName) }
@@ -136,6 +139,7 @@ function Find-Protocols([string]$Dir, $Json) {
     if ($text -match 'manchester|bi-?phase') { $found.manchester = 1 }
     if ($text -match '\bi2s\b|\bpcm\b') { $found.i2s = 1 }
     if ($text -match 'simple parallel|parallel bus|parallel analyzer') { $found.parallel = 1 }
+    if ($text -match 'ws281|ws2813|neopixel|addressable led|rgb led|\bleds? strip') { $found.led = 1 }
     $list = @($AllProtocols | Where-Object { $found.ContainsKey($_) })
     if ($list) { return $list }
     return $DefaultProtocols
@@ -169,11 +173,14 @@ function Install-Compat {
     if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'compat\saleae') -Destination $CompatDest -Recurse
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'compat\saleae_bridge.py') -Destination $CompatDest -Force
-    # sigrok has no Manchester decoder: install ours for 'manchester' HLAs.
+    # Decoders sigrok does not have (manchester, rgb_led_async) for those HLA inputs.
     New-Item -ItemType Directory -Force -Path $Decoders | Out-Null
-    $man = Join-Path $Decoders 'manchester'
-    if (Test-Path -LiteralPath $man) { Remove-Item -LiteralPath $man -Recurse -Force }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'decoders\manchester') -Destination $Decoders -Recurse
+    foreach ($d in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'decoders') -Directory) {
+        $dest = Join-Path $Decoders $d.Name
+        if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+        Copy-Item -LiteralPath $d.FullName -Destination $Decoders -Recurse
+        Get-ChildItem -LiteralPath $dest -Recurse -Directory -Force -Filter __pycache__ | Remove-Item -Recurse -Force
+    }
 }
 
 function Install-Extension([string]$Src) {

@@ -75,6 +75,8 @@ def main():
     sr, pvs = os.path.join(work, 'test.sr'), os.path.join(work, 'test.pvs')
     subprocess.run([a.python, '-I', os.path.join(REPO, 'extensions', 'tests', 'make-capture.py'), sr, pvs],
                    check=True, capture_output=True)
+    subprocess.run([a.python, '-I', os.path.join(REPO, 'extensions', 'tests', 'make-capture-more.py'),
+                    os.path.join(work, 'more.sr'), os.path.join(work, 'led.sr')], check=True, capture_output=True)
     sock = socket.socket()
     sock.bind(('127.0.0.1', 0))
     port = sock.getsockname()[1]
@@ -105,6 +107,89 @@ def main():
 def frames(c, cid, aid, limit=500):
     r, e = c.call('read_analyzer_frames', captureId=cid, analyzerId=aid, limit=limit)
     return r['frames'] if r else e
+
+
+def echo(c, cid, aid):
+    """Add the Frame Echo HLA on an analyzer; its frame texts."""
+    r, e = c.call('add_high_level_analyzer', captureId=cid, extensionDirectory=os.path.join(HLAS, 'frame-echo'),
+                  hlaName='Frame Echo', inputAnalyzerId=aid)
+    return [f['value'] for f in frames(c, cid, r['analyzerId'])] if r else e
+
+
+def run_more(c, work):
+    """LIN, 1-Wire, Manchester, I2S / PCM, Simple Parallel and Addressable
+    LEDs (Async) with Logic 2's setting names, and HLAs on them."""
+    r, e = c.call('load_capture', filepath=os.path.join(work, 'more.sr'))
+    check('load more.sr', r is not None, e)
+    cid = r['captureId']
+
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='LIN',
+                  settings={'Serial': n(0), 'Bit Rate (Bits/s)': n(19200), 'LIN Version': s('Version 2.x')})
+    check('add LIN', r is not None, e)
+    got = [f['value'] for f in frames(c, cid, r['analyzerId'])] if r else e
+    check('LIN frames (lin decoder)', 'Data: 0x01' in got and 'Data: 0x02' in got and
+          any(v.startswith('Checksum: 0x6A') for v in got), got)
+    got = echo(c, cid, r['analyzerId']) if r else e
+    check('LIN HLA', got == ['header_break', 'header_sync', 'header_pid: protected_id=18', 'data: data=1, index=0',
+                             'data: data=2, index=1', 'checksum: checksum=106'], got)
+
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='1-Wire',
+                  settings={'1-Wire': n(1), 'Overdrive only mode': {'boolValue': False}})
+    check('add 1-Wire (bool setting)', r is not None, e)
+    got = [f['value'] for f in frames(c, cid, r['analyzerId'])] if r else e
+    check('1-Wire frames (onewire_network)', any('0xcc' in v for v in got) and 'Data: 0x44' in got, got)
+    got = echo(c, cid, r['analyzerId']) if r else e
+    check('1-Wire HLA', got == ['reset', 'presence', 'rom_command: rom_command=0xCC, description=skip',
+                                'data: data=0x44'], got)
+
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='Manchester',
+                  settings={'Manchester': n(2), 'Bit Rate (Bits/s)': n(100000),
+                            'Edge Polarity': s('negative edge is binary zero'),
+                            'Significant Bit': s('Most Significant Bit Sent First'),
+                            'Tolerance': s('5% of period')})
+    check('add Manchester', r is not None, e)
+    got = [f['value'] for f in frames(c, cid, r['analyzerId'])] if r else e
+    check('Manchester frames', got == ['Word: 0xA5', 'Word: 0x3C'], got)
+    got = echo(c, cid, r['analyzerId']) if r else e
+    check('Manchester HLA', got == ['data: data=165', 'data: data=60'], got)
+
+    i2s = {'CLOCK channel': n(3), 'FRAME': n(4), 'DATA': n(5)}
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='I2S / PCM',
+                  settings=dict(i2s, **{'Signed/Unsigned': s("Signed (two's complement)"),
+                                        'Audio Bit Depth (bits/sample)': s('16 Bits/Word')}))
+    check('add I2S / PCM', r is not None, e)
+    got = echo(c, cid, r['analyzerId']) if r else e
+    check('I2S HLA (signed 16-bit from the analyzer settings)', got == [
+        'data: channel=0, data=-1', 'data: channel=1, data=1', 'data: channel=0, data=-32768',
+        'data: channel=1, data=32767', 'data: channel=0, data=0'], got)
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='I2S / PCM',
+                  settings=dict(i2s, **{'CLOCK State': s('Falling edge')}))
+    check('I2S setting sigrok cannot do is refused', e and '"Rising edge"' in e, e)
+
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='Simple Parallel',
+                  settings={'D0': n(7), 'Clock': n(6), 'Clock State': s('Rising edge')})
+    check('add Simple Parallel', r is not None, e)
+    got = echo(c, cid, r['analyzerId']) if r else e
+    check('Simple Parallel HLA', got == ['data: data=1', 'data: data=0', 'data: data=1', 'data: data=1'], got)
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='Simple Parallel', settings={'Clock': n(6)})
+    check('Simple Parallel needs a data channel', e and 'at least one channel' in e, e)
+    c.call('close_capture', captureId=cid)
+
+    r, e = c.call('load_capture', filepath=os.path.join(work, 'led.sr'))
+    cid = r['captureId'] if r else None
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='Addressable LEDs (Async)',
+                  settings={'LED Channel': n(0), 'LED Controller': s('WS2812B')})
+    check('add Addressable LEDs (Async)', r is not None, e)
+    got = [f['value'] for f in frames(c, cid, r['analyzerId']) if f['type'] == 'pixel'] if r else e
+    check('LED frames', got == ['#0 R:255 G:0 B:0', '#1 R:0 G:255 B:0', '#2 R:0 G:0 B:255',
+                                '#0 R:18 G:52 B:86', '#1 R:171 G:205 B:239'], got)
+    got = echo(c, cid, r['analyzerId']) if r else e
+    check('LED HLA', got[:2] == ['pixel: index=0, red=255, green=0, blue=0',
+                                 'pixel: index=1, red=0, green=255, blue=0'] and len(got) == 5, got)
+    r, e = c.call('add_analyzer', captureId=cid, analyzerName='Addressable LEDs (Async)',
+                  settings={'LED Channel': n(0), 'LED Controller': s('WS9999')})
+    check('LED controller choices listed', e and '"LPD1886 - 36 bit"' in e, e)
+    c.call('close_capture', captureId=cid)
 
 
 def run(c, work, sr, hardware):
@@ -175,6 +260,8 @@ def run(c, work, sr, hardware):
                   hlaName='CanMessages', inputAnalyzerId=r['analyzerId'])
     got = [f['value'] for f in frames(c, cid, r['analyzerId'])] if r else e
     check('CAN HLA', len(got) == 2 and got[0].startswith('ID 0x123 [3] 11 22 33') and '0x1ABCDEF' in got[1], got)
+
+    run_more(c, work)
 
     # Any sigrok decoder by id
     r, e = c.call('add_analyzer', captureId=cid, analyzerName='uart', settings={'rx': n(0), 'baudrate': n(115200),

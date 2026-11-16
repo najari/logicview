@@ -122,11 +122,11 @@ except TypeError as e:
 installed = sorted(os.listdir(os.path.join(ROOT, 'decoders')))
 check('detection', [d for d in installed if d.startswith('hla_')] == [
     'hla_can_messages_can', 'hla_dynamic_types_uart', 'hla_echo_errors_uart',
-    'hla_frame_echo_i2s', 'hla_frame_echo_lin', 'hla_frame_echo_manchester',
+    'hla_frame_echo_i2s', 'hla_frame_echo_led', 'hla_frame_echo_lin', 'hla_frame_echo_manchester',
     'hla_frame_echo_onewire', 'hla_frame_echo_parallel',
     'hla_i2c_transactions_i2c', 'hla_legacy_api_uart', 'hla_line_reader_uart',
     'hla_spi_burst_spi'], installed)
-check('manchester decoder installed', 'manchester' in installed, installed)
+check('extra decoders installed', 'manchester' in installed and 'rgb_led_async' in installed, installed)
 
 # --- I2C: write 50 [10 20], repeated start, read 50 [AB] NACK, stop ------------
 seq = [('START', None), ('ADDRESS WRITE', 0x50), ('ACK', None), ('DATA WRITE', 0x10), ('ACK', None),
@@ -221,7 +221,7 @@ check('onewire invalid command', got[-1][2] == 'invalid_rom_command: rom_command
 
 # --- I2S, Simple Parallel, Manchester words ------------------------------------
 pk = [(0, 32, ['DATA', ['L', 0xFFFF]]), (32, 64, ['DATA', ['R', 0x0001]])]
-_, got = echoed('hla_frame_echo_i2s', pk, hla_i2s_format='signed-16')
+_, got = echoed('hla_frame_echo_i2s', pk, hla_i2s_signed='yes', hla_i2s_bits=16)
 check('i2s signed', [t for _, _, t in got] == ['data: channel=0, data=-1', 'data: channel=1, data=1'], got)
 _, got = echoed('hla_frame_echo_i2s', pk)
 check('i2s unsigned', got[0][2] == 'data: channel=0, data=65535', got)
@@ -229,6 +229,30 @@ _, got = echoed('hla_frame_echo_parallel', [(0, 5, ['ITEM', [0xA5, 8]]), (0, 5, 
 check('parallel items', got == [(0, 5, 'data: data=165')], got)
 cls, got = echoed('hla_frame_echo_manchester', [(0, 80, ['WORD', 0x3C, 8])])
 check('manchester words', got == [(0, 80, 'data: data=60')] and cls.inputs == ['manchester'], got)
+_, got = echoed('hla_frame_echo_i2s', [(0, 24, ['DATA', ['L', 0x800]])], hla_i2s_signed='yes', hla_i2s_bits=12)
+check('i2s signed 12-bit', got[0][2] == 'data: channel=0, data=-2048', got)
+cls, got = echoed('hla_frame_echo_led', [(0, 90, ['PIXEL', 0, 255, 16, 1]), (90, 180, ['PIXEL', 1, 0, 0, 4095])])
+check('led pixels', [t for _, _, t in got] == ['pixel: index=0, red=255, green=16, blue=1',
+                                                'pixel: index=1, red=0, green=0, blue=4095']
+      and cls.inputs == ['rgb_led_async'], got)
+
+# --- The rgb_led_async decoder's timing rules ---------------------------------
+led = importlib.import_module('rgb_led_async.pd')
+ws2812b, ws2811 = led.CONTROLLERS['WS2812B'], led.CONTROLLERS['WS2811']
+check('led first bit', led.first_bit(ws2812b, 400e-9, 850e-9) == (0, 0)
+      and led.first_bit(ws2812b, 800e-9, 450e-9) == (0, 1)
+      and led.first_bit(ws2812b, 2e-6, 450e-9) is None, '')
+# WS2811 high speed: a 600 ns high is a 1 at high speed (and too short for a
+# low-speed 1), told apart by the low time on the first bit.
+check('led speed detection', led.first_bit(ws2811, 600e-9, 1300e-9) == (1, 1)
+      and led.first_bit(ws2811, 500e-9, 2000e-9) == (0, 0), '')
+check('led next bit', led.next_bit(ws2812b, 0, 400e-9, 850e-9) == 0
+      and led.next_bit(ws2812b, 0, 800e-9, None) == 1
+      and led.next_bit(ws2812b, 0, 400e-9, 5e-6) is None
+      and led.next_bit(ws2812b, 0, 600e-9, 500e-9) is None, '')
+check('led colour order', led.pixel(ws2812b, [1, 2, 3]) == (2, 1, 3)
+      and led.pixel(ws2811, [1, 2, 3]) == (1, 2, 3), '')
+check('led 36-bit', led.CONTROLLERS['LPD1886-36'].bits_per_channel == 12, '')
 
 # --- The manchester decoder: encode bits, decode the edges back ---------------
 man = importlib.import_module('manchester.pd')
@@ -284,6 +308,19 @@ for mode, idle, bits in (('manchester', 0, [1] * 8), ('bi-phase mark', 0, [1] * 
     check('manchester no full bit {} {}'.format(mode, ''.join(map(str, bits))), got == bits, got)
 spans = decode_bits(encode([1, 0, 1, 1], 'manchester'), 'manchester')
 check('manchester bit spans', [s[:2] for s in spans] == [(100, 120), (120, 140), (140, 160), (160, 180)], spans)
+
+# --- manchester options: first edge, tolerance --------------------------------
+ones = encode([1] * 8, 'manchester', True, 1)
+got = [b for _, _, b in decode_bits(ones, 'manchester')]
+check('manchester ambiguous burst, auto', got != [1] * 8, got)
+cells = man.align(man.cells_from_edges(ones, 10), ones, 10, 'manchester', 'bit boundary')
+got = [b for _, _, b in man.bits_from_cells(cells, 10, 'manchester', True, 1 - ones[0][1])]
+check('manchester first edge = bit boundary', got == [1] * 8, got)
+skewed = [(100, 1), (110, 0), (126, 1), (136, 0)]   # 16 samples: 2 cells (20) less 0.2 bit
+errs = man.timing_errors(skewed, 10, 0.25)
+check('manchester tolerance 25%', errs == [], errs)
+errs = man.timing_errors(skewed, 10, 0.05)
+check('manchester tolerance 5%', [t for t, _ in errs] == [126] and abs(errs[0][1] - 0.2) < 1e-9, errs)
 
 print()
 print('FAILED: ' + ', '.join(FAILED) if FAILED else 'all tests passed')

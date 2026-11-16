@@ -7,7 +7,11 @@ the first four: LIN, 1-Wire, Manchester, I2S and Simple Parallel.
   D3/D4/D5 I2S          SCK 1 MHz, WS, SD: 16-bit L FFFF, R 0001, L 8000, R 7FFF
   D6/D7 parallel        CLK, D0: items 1 0 1 1
 
-Usage: python -I make-capture-more.py <out.sr>
+With a second file, also an Addressable LED capture (20 MHz, D0 only):
+WS2812B packets of 3 pixels (FF0000, 00FF00, 0000FF) and, after a 60 us
+reset, 2 pixels (123456, ABCDEF).
+
+Usage: python -I make-capture-more.py <out.sr> [<led.sr>]
 """
 import sys
 import zipfile
@@ -111,11 +115,37 @@ for ch, evs in events.items():
             for i in range(start, min(nxt[0], N)):
                 samples[i] |= 1 << ch
 
-metadata = ('[global]\nsigrok version=0.5.2\n\n[device 1]\ncapturefile=logic-1\n'
-            'total probes=8\nsamplerate=10 MHz\ntotal analog=0\n' +
-            ''.join('probe{}=D{}\n'.format(i + 1, i) for i in range(8)) + 'unitsize=1\n')
-with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED) as z:
-    z.writestr('version', '2')
-    z.writestr('metadata', metadata)
-    z.writestr('logic-1-1', bytes(samples))
-print('wrote', sys.argv[1])
+
+def write_sr(path, data, rate_text):
+    metadata = ('[global]\nsigrok version=0.5.2\n\n[device 1]\ncapturefile=logic-1\n'
+                'total probes=8\nsamplerate=' + rate_text + '\ntotal analog=0\n' +
+                ''.join('probe{}=D{}\n'.format(i + 1, i) for i in range(8)) + 'unitsize=1\n')
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('version', '2')
+        z.writestr('metadata', metadata)
+        z.writestr('logic-1-1', bytes(data))
+    print('wrote', path)
+
+
+write_sr(sys.argv[1], samples, '10 MHz')
+
+if len(sys.argv) > 2:
+    # WS2812B at 20 MHz (50 ns per sample): 0 = 400 ns high, 850 ns low;
+    # 1 = 800 ns high, 450 ns low; green, red, blue, MSB first.
+    led = []
+
+    def level(v, ns):
+        led.extend([v] * int(ns / 50))
+
+    level(0, 100_000)
+    for packet in ([(0xFF, 0, 0), (0, 0xFF, 0), (0, 0, 0xFF)],
+                   [(0x12, 0x34, 0x56), (0xAB, 0xCD, 0xEF)]):
+        for r, g, b in packet:
+            for byte in (g, r, b):
+                for k in range(7, -1, -1):
+                    one = (byte >> k) & 1
+                    level(1, 800 if one else 400)
+                    level(0, 450 if one else 850)
+        level(0, 60_000)
+    level(0, 40_000)
+    write_sr(sys.argv[2], led, '20 MHz')

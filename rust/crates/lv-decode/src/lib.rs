@@ -269,6 +269,16 @@ pub fn add_decoder_dir(dir: &Path) {
     }
 }
 
+/// logicview's own decoders (manchester, rgb_led_async): `extensions\decoders`
+/// next to the executable (the package) or in a parent folder (the repo).
+pub fn bundled_decoder_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .skip(1)
+        .map(|d| d.join("extensions").join("decoders"))
+        .find(|d| d.is_dir())
+}
+
 fn has_runtime(dir: &Path) -> bool {
     dir.join("libsigrokdecode-4.dll").is_file()
         && dir.join("share/libsigrokdecode/decoders").is_dir()
@@ -323,6 +333,9 @@ fn start_runtime() -> std::result::Result<Runtime, String> {
         // SAFETY: done once, before Python starts; Windows keeps the
         // environment behind a lock, so concurrent readers are safe.
         unsafe { std::env::set_var("PYTHONHOME", &dir) };
+    }
+    if let Some(d) = bundled_decoder_dir() {
+        add_decoder_dir(&d);
     }
     let extra = EXTRA_DIRS.lock().map(|v| v.clone()).unwrap_or_default();
     if !extra.is_empty() {

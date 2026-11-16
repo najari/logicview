@@ -4,7 +4,7 @@ protocol decoder.
 Each installed HLA gets one decoder package per input protocol (see hla.ps1).
 That package calls make_decoder(), which loads the HLA and builds a Decoder
 class that is stacked on a sigrok decoder (see INPUTS: uart, i2c, spi, can,
-uart for LIN, onewire_link, manchester, i2s, parallel):
+uart for LIN, onewire_link, manchester, i2s, parallel, rgb_led_async):
 
 - the lower decoder's Python output is turned into the frames Logic 2's
   analyzers give an HLA (types and data keys as in Saleae's frame format
@@ -449,16 +449,16 @@ class I2sInput:
     the raw word, so the sample format is an option here."""
 
     options = (
-        {'id': 'hla_i2s_format',
-         'desc': 'I2S samples for the HLA (signed-N: N-bit two\'s complement)',
-         'default': 'unsigned',
-         'values': ('unsigned', 'signed-8', 'signed-16', 'signed-24',
-                    'signed-32')},
+        {'id': 'hla_i2s_signed',
+         'desc': 'I2S samples are signed (two\'s complement) for the HLA',
+         'default': 'no', 'values': ('no', 'yes')},
+        {'id': 'hla_i2s_bits', 'desc': 'I2S bits per sample (for the sign)',
+         'default': 16},
     )
 
     def __init__(self, options):
-        fmt = options.get('hla_i2s_format', 'unsigned')
-        self.bits = int(fmt.split('-')[1]) if fmt.startswith('signed-') else 0
+        signed = options.get('hla_i2s_signed', 'no') == 'yes'
+        self.bits = max(1, int(options.get('hla_i2s_bits', 16))) if signed else 0
 
     def feed(self, ss, es, data):
         if data[0] != 'DATA':
@@ -486,6 +486,23 @@ class ParallelInput:
             yield ss, es, 'data', {'data': data[1][0]}
 
 
+class LedInput:
+    """rgb_led_async (the decoder installed with this bridge) -> Addressable
+    LEDs (Async) 'pixel' frames (index from the last reset, raw red, green,
+    blue values: up to 12 bits for LPD1886 36-bit)."""
+
+    options = ()
+
+    def __init__(self, options):
+        pass
+
+    def feed(self, ss, es, data):
+        if data[0] == 'PIXEL':
+            _, index, red, green, blue = data
+            yield ss, es, 'pixel', {'index': index, 'red': red,
+                                    'green': green, 'blue': blue}
+
+
 # Input protocol -> (sigrok decoder the HLA stacks on, adapter, Logic 2 name).
 INPUTS = {
     'uart': ('uart', UartInput, 'Async Serial'),
@@ -497,6 +514,7 @@ INPUTS = {
     'manchester': ('manchester', ManchesterInput, 'Manchester'),
     'i2s': ('i2s', I2sInput, 'I2S / PCM'),
     'parallel': ('parallel', ParallelInput, 'Simple Parallel'),
+    'led': ('rgb_led_async', LedInput, 'Addressable LEDs (Async)'),
 }
 
 

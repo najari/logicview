@@ -52,6 +52,8 @@ logicview.exe 를 실행한다.
 add_analyzer, remove_analyzer, add_high_level_analyzer, remove_high_level_analyzer, export_raw_data_csv,
 export_raw_data_binary, export_data_table_csv, legacy_export_analyzer, read_analyzer_frames,
 query_frames(캡처 파일에 읽기 전용 SQL).
+add_analyzer의 Logic 2 분석기: Async Serial, I2C, SPI, CAN, LIN, 1-Wire, Manchester, I2S / PCM,
+Simple Parallel, Addressable LEDs (Async) (설정 이름도 Logic 2와 같음). sigrok 디코더 id도 받는다.
 
   stdio:  claude mcp add -s user logicview -- "<압축 푼 폴더>\logicview.exe" --mcp-stdio
   HTTP:   앱에서 MCP 버튼을 누르거나  logicview.exe --mcp-http  로 띄운 뒤
@@ -66,7 +68,8 @@ query_frames(캡처 파일에 읽기 전용 SQL).
 
 설치한 HLA는 디코더 창에서 프로토콜 디코더 위에 쌓아 쓴다 (예: uart 위에 hla_..._uart).
 입력: Async Serial(uart), I2C, SPI, CAN, LIN(uart 위), 1-Wire(onewire_link 위), Manchester,
-I2S / PCM, Simple Parallel.
+I2S / PCM, Simple Parallel, Addressable LEDs (Async). Manchester와 Addressable LED 디코더
+(manchester, rgb_led_async)는 extensions\decoders에 있고 디코더 창에도 나온다.
 numpy처럼 컴파일된 패키지는 MSYS2(https://www.msys2.org/, 기본 C:\msys64, 다른 곳이면 -Msys2 <폴더>)의
 UCRT64 패키지에서 가져온다. 순수 Python 패키지는 MSYS2 없이 PyPI에서 받는다.
 MCP의 add_high_level_analyzer는 확장 폴더를 받아 알아서 설치한다. 확장 코드는 앱 안의 Python에서

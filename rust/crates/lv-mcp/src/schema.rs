@@ -115,7 +115,7 @@ pub fn tools() -> Vec<(&'static str, &'static str, Value, Vec<&'static str>)> {
             "Add a protocol analyzer to a capture and decode it",
             json!({
             "captureId": num("Capture ID to add analyzer to"),
-            "analyzerName": {"description": "Logic 2 analyzer name (\"Async Serial\", \"I2C\", \"SPI\", \"CAN\") or any sigrok decoder id with logic input (e.g. \"onewire_link\", \"ir_nec\")", "type": "string"},
+            "analyzerName": {"description": "Logic 2 analyzer name (\"Async Serial\", \"I2C\", \"SPI\", \"CAN\", \"LIN\", \"1-Wire\", \"Manchester\", \"I2S / PCM\", \"Simple Parallel\", \"Addressable LEDs (Async)\") or any sigrok decoder id with logic input (e.g. \"onewire_link\", \"ir_nec\")", "type": "string"},
             "analyzerLabel": {"description": "User-facing label for the analyzer", "type": "string"},
             "settings": {"description": "Settings keyed by setting name (Logic 2 names; for sigrok decoders the channel/option ids). Channels take numberValue = channel index",
                          "$ref": "#/definitions/AnalyzerSettings"}}),
@@ -130,7 +130,7 @@ pub fn tools() -> Vec<(&'static str, &'static str, Value, Vec<&'static str>)> {
         ),
         (
             "add_high_level_analyzer",
-            "Add a Saleae Logic 2 high-level analyzer extension (HLA) on top of an Async Serial, I2C, SPI or CAN analyzer",
+            "Add a Saleae Logic 2 high-level analyzer extension (HLA) on top of an Async Serial, I2C, SPI, CAN, LIN, 1-Wire, Manchester, I2S / PCM, Simple Parallel or Addressable LEDs (Async) analyzer",
             json!({
             "captureId": capture_id,
             "extensionDirectory": {"description": "Path to the extension directory (with extension.json)", "type": "string"},

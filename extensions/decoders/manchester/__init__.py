@@ -17,7 +17,10 @@ level for more than 1.25 bit times; the bits of a burst are grouped into
 words of the given size, after skipping the given number of leading bits.
 The bit cell boundaries are taken from the first interval of a full bit time
 in the burst; without one, the first edge is taken as a mid-bit transition
-(Manchester codes) or a bit boundary (bi-phase codes).
+(Manchester codes) or a bit boundary (bi-phase codes). The option 'First edge
+of a burst' sets this instead (for bursts of one repeated bit). Edges further
+from the expected time than the tolerance (25%, 5% or 0.5% of the bit period,
+as in Logic 2) get a warning.
 
 Python output: ['WORD', <value>, <bits>] for each word.
 '''

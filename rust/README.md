@@ -521,6 +521,20 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
 | `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
 | `scripts\package.ps1 -RuntimeDir <릴리스 앱> -NoBuild -OutDir <임시 폴더>` → `scripts\test-package.ps1 -Hardware` | 958개 파일, 풀면 56.6 MB, zip 22.3 MB. 7개 모두 통과 |
 
+2026-11-17, `844dbbf`(README만 바뀜)에서 다시 돌렸다.
+
+| 시험 | 결과 |
+| --- | --- |
+| build, fmt, clippy, `cargo test --release --workspace` | 경고 없음, 54개 모두 통과 |
+| `lvcli bench --rate 24M --samples 50M --runs 5` | **4/5**. 3회째가 1.62초(14,647,808 샘플)에서 "장치 버퍼가 넘쳐 데이터가 끊김"으로 멈춤 |
+| 곧바로 같은 bench 다시 | **5/5**. 2.091 s, 대기열 최대 0%, 마무리 16~18 ms |
+| `lvcli bench --rate 12M --samples 50M --runs 3` | 3/3 |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버 / Python 서버) | 64개 / 62개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
+| `scripts\package.ps1` → `scripts\test-package.ps1 -Hardware` | 958개 파일, zip 22.3 MB. 7개 모두 통과 |
+
+코드가 바뀌지 않았으므로 24 MHz 실패는 알려진 USB 포트·연결 상태 문제로 본다. 앱은 끊김을 버퍼 넘침으로 알리고 멈췄다.
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

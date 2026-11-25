@@ -44,7 +44,8 @@ lvcli capture -r 4M -s 1M -t 0=f,1=1 --pre 20 -o cap.lvcap --names TX,RX
                                                          # 트리거: D0 하강 AND D1 High, 앞 20%
 lvcli bench --rate 24M --samples 50M --runs 5            # 시제품 관문 시험
 lvcli capture -d usb/1-14 -r 200M -s 400M --level 3.3 -o u3.lvcap
-                                                         # WeAct U3: 200 MHz, 3.3 V 신호 (문턱 1.5 V)
+                                                         # WeAct U3: 16채널 200 MHz, 3.3 V 신호 (문턱 1.5 V)
+lvcli capture -r 20M -s 20M --channels 8 -o u3-8.lvcap   # U3를 8채널로 (샘플마다 1바이트)
 lvcli info cap.lvcap
 lvcli export cap.lvcap -f csv                            # cap.csv (Time [s],Channel 0..)
 lvcli export cap.lvcap -f bin -c 0,1                     # cap\digital_0.bin, digital_1.bin
@@ -574,7 +575,7 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
 - 명령은 bulk 0x01로 64바이트 `[cmd, len, data…]`, 답은 0x81로 32바이트 `[cmd|0x10, len, status, data…]`.
   샘플은 0x82. 시작 전에 `0xA0 [폭 0x08, 분주 번호, 0]`, 시작 `0xA2`, 중지 `0xA3`(답 없음). 분주 번호는
   샘플레이트 표의 순번이다 (USB 3.0: 200 MHz~4 MHz 25개, USB 2.0 8채널: 40 MHz~4 MHz 8개).
-- **8채널(D0~D7)만 쓴다.** `.lvcap`, 파형, 디코더, 트리거가 샘플마다 1바이트라서다. 16채널은 저장 형식부터 바꿔야 한다.
+- 처음에는 8채널(D0~D7)만 썼다. 16채널은 아래 "16채널" 절 (2026-11-25).
 - 장치 연결: Windows에서는 보드가 기본으로 WCH CH375 드라이버(`CH375_A64`)에 묶여 있어 그 드라이버가 깐
   `CH375DLL64.DLL`(System32)을 실행 중에 읽어 쓴다 (zip에 넣지 않음). Device Manager에서 드라이버를 지우고
   다시 꽂아 WinUSB로 바뀌면(펌웨어 0.2) nusb로 다룬다. 어느 쪽인지는 nusb가 알려 주는 장치 드라이버 이름으로
@@ -605,6 +606,38 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
 | `scripts\test-package.ps1 -Hardware` | 7개 모두 통과 (U3에서 4 MHz 1 M 샘플). 풀어 둔 패키지가 PATH에 Windows 폴더만 둔 채 `CH375DLL64.DLL`을 찾음 |
 
 실제 신호로 채널 순서(D0이 비트 0)를 확인하는 시험과 WinUSB로 바꾼 뒤의 시험은 아직 하지 않았다.
+
+## 16채널 (2026-11-25)
+
+WeAct U3의 16채널(D0~D15)을 수집·저장·표시·디코딩한다.
+
+- `.lvcap`: 채널이 9개 이상이면 샘플마다 2바이트(리틀 엔디언, 비트 n = 채널 n)로 저장한다. 8채널 이하는
+  전과 같이 1바이트라 예전 파일과 그대로 호환되고, 형식 버전도 1 그대로다(`capture.num_channels`로 폭을 정함).
+  줌 요약의 OR·AND 항목도 같은 폭이다. 덩어리는 샘플 수로 1 M 그대로(16채널이면 2 MiB).
+- `.sr` 내보내기는 `unitsize=2`, 불러오기는 16채널까지 받는다. CSV·Saleae 바이너리 내보내기, 트리거
+  (`15=r` 등), 디코더(libsigrokdecode에 `unitsize` 2로 넘김), 커서 값, 가장자리 맞추기도 16채널.
+- U3: 채널 수에 따라 폭 `0x08`(8채널) / `0x10`(16채널)로 시작한다. USB 2.0에서는 16채널 표(20 MHz~4 MHz)를 쓴다.
+  읽은 블록 끝에 샘플이 반만 걸리면 다음 블록과 이어 붙여 넘긴다.
+- 앱: 도구 막대에 "채널"(8/16, 고를 수 있는 장치만)이 나오고 `app.db`의 `capture.channels`에 기억한다.
+  채널 이름·보이기는 16개를 기억하고, 0.1.8까지 저장한 8개는 앞 8개로 읽는다. 파형·채널 창은 열린 파일의 채널 수만큼.
+- lvcli `--channels 8|16`(없으면 장치의 최대), `--names`는 16개까지. MCP `start_capture`는 `digitalChannels`에
+  8번 이상이 있으면 16채널, 아니면 8채널로 수집하고, 장치에 없는 채널은 "Device channels: 0-15"로 거절한다.
+
+시험 (2026-11-25, 같은 보드·포트; 입력에 신호 없음):
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo fmt --check`, `cargo clippy --workspace --all-targets` | 경고 없음 |
+| `cargo test --release --workspace` (`LOGICVIEW_SIGROK_DIR` 지정) | 67개 모두 통과. 새 시험: 16채널 요약, 쓰기·읽기(샘플이 두 push에 걸쳐 나뉨), CSV·바이너리, `.sr` 왕복, 17채널 거절, 트리거(D12 상승 AND D9 High, 블록 경계), 앞 구간 버퍼, U3 USB 2.0 16채널 표, libsigrokdecode로 D12의 UART "Hi", 8개 저장 이름 읽기 |
+| `lvcli devices` | 채널 `8/16` |
+| `lvcli capture -r 20M -s 20M` | 16채널(D0~D15), 1.004 s, 38.1 MiB |
+| `lvcli bench -r 200M -s 400M -n 3 --level 3.3` (16채널, 400 MB/s) | **3/3**. 2.001~2.003 s(실효 199.7~199.9 MHz), 대기열 최대 6% |
+| `lvcli bench -r 200M -s 400M -n 2 --channels 8` | 2/2 |
+| `--channels 12` / `-t 15=r --channels 8` | 12채널 파일(샘플마다 2바이트) / "channel 15 is not captured (channels 0..7)" |
+| 앱 (UI Automation, 20 MHz 0.5 s) | 도구 막대 "채널 16", "D0~D15을 수집", 완료 후 파형에 D0~D15 16줄 (화면 확인) |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버) | 67개 모두 통과. 새 U3 항목: 16채널 200 MHz 0.1 s → `.sr` 40,000,000바이트(2바이트 × 20 M), CSV에 `Channel 15`, 채널 16 거절 |
+| 같은 시험 (Python 서버, 하드웨어 없이) / `extensions\tests\run-tests.ps1` | 52개 / 71개 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` | 7개 모두 통과 |
 
 ## PRD와 다르게 한 것
 

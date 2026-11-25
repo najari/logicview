@@ -10,14 +10,12 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::{
-    CHUNK_SAMPLES, CaptureFile, CaptureInfo, CaptureWriter, Error, NewCapture, Result, Status,
-    WriteStats,
+    CHUNK_SAMPLES, CaptureFile, CaptureInfo, CaptureWriter, Error, MAX_CHANNELS, NewCapture,
+    Result, Status, WriteStats, unit_for,
 };
 
 /// Logic samples per `logic-1-N` entry when exporting.
 const ENTRY_SAMPLES: usize = 4 * CHUNK_SAMPLES;
-/// Channels a `.lvcap` holds (one byte per sample).
-const MAX_CHANNELS: usize = 8;
 
 /// `24000000` -> `24 MHz`, like libsigrok's `sr_samplerate_string`.
 pub fn rate_text(hz: u64) -> String {
@@ -79,12 +77,14 @@ pub fn export(f: &CaptureFile, out: &Path) -> Result<u64> {
         let name: String = name.chars().filter(|c| !c.is_control()).collect();
         meta.push_str(&format!("probe{}={}\n", i + 1, name));
     }
-    meta.push_str("unitsize=1\n");
+    let unit = info.unitsize();
+    meta.push_str(&format!("unitsize={unit}\n"));
     z.start_file("metadata", stored).map_err(zip_err(out))?;
     z.write_all(meta.as_bytes()).map_err(io)?;
 
     let mut entry = 0usize;
-    let mut buf: Vec<u8> = Vec::with_capacity(ENTRY_SAMPLES);
+    let entry_bytes = ENTRY_SAMPLES * unit;
+    let mut buf: Vec<u8> = Vec::with_capacity(entry_bytes);
     let mut flush = |z: &mut ZipWriter<BufWriter<File>>, buf: &mut Vec<u8>| -> Result<()> {
         if buf.is_empty() {
             return Ok(());
@@ -99,10 +99,10 @@ pub fn export(f: &CaptureFile, out: &Path) -> Result<u64> {
     f.for_each_chunk(|_, data| {
         let mut data = data;
         while !data.is_empty() {
-            let take = (ENTRY_SAMPLES - buf.len()).min(data.len());
+            let take = (entry_bytes - buf.len()).min(data.len());
             buf.extend_from_slice(&data[..take]);
             data = &data[take..];
-            if buf.len() == ENTRY_SAMPLES {
+            if buf.len() == entry_bytes {
                 flush(&mut z, &mut buf)?;
             }
         }
@@ -193,8 +193,8 @@ pub fn parse_metadata(text: &str) -> std::result::Result<SrMeta, String> {
     Ok(m)
 }
 
-/// Import a sigrok session file into a new `.lvcap`. Only channels 0..8
-/// are kept (the first byte of each sample unit).
+/// Import a sigrok session file into a new `.lvcap`. Only channels 0..16
+/// are kept (the first two bytes of each sample unit).
 pub fn import(src: &Path, out: &Path, overwrite: bool) -> Result<(CaptureInfo, WriteStats)> {
     let io = |e: std::io::Error| Error::Io(src.to_path_buf(), e);
     let mut z =
@@ -217,10 +217,10 @@ pub fn import(src: &Path, out: &Path, overwrite: bool) -> Result<(CaptureInfo, W
         .map_err(io)?;
     let meta = parse_metadata(&text).map_err(|m| format_err(src, m))?;
 
-    let channels = meta.total_probes.min(MAX_CHANNELS);
-    if meta.total_probes > MAX_CHANNELS {
+    let channels = meta.total_probes.min(MAX_CHANNELS).min(meta.unitsize * 8);
+    if meta.total_probes > channels {
         log::warn!(
-            "{}: {} channels, keeping the first {MAX_CHANNELS}",
+            "{}: {} channels, keeping the first {channels}",
             src.display(),
             meta.total_probes
         );
@@ -269,6 +269,8 @@ pub fn import(src: &Path, out: &Path, overwrite: bool) -> Result<(CaptureInfo, W
         overwrite,
     )?;
     let unit = meta.unitsize;
+    // Bytes of each sample unit that are kept.
+    let keep = unit_for(channels);
     let mut raw = Vec::new();
     let mut samples = Vec::new();
     // Bytes of a sample unit split across two entries.
@@ -283,11 +285,13 @@ pub fn import(src: &Path, out: &Path, overwrite: bool) -> Result<(CaptureInfo, W
             .map_err(io)?;
         let whole = raw.len() / unit * unit;
         carry.extend_from_slice(&raw[whole..]);
-        if unit == 1 {
+        if unit == keep {
             w.push(&raw[..whole])?;
         } else {
             samples.clear();
-            samples.extend(raw[..whole].iter().step_by(unit));
+            for s in raw[..whole].chunks_exact(unit) {
+                samples.extend_from_slice(&s[..keep]);
+            }
             w.push(&samples)?;
         }
     }
@@ -368,6 +372,38 @@ mod tests {
         let (info, _) = import(&sr, &back, true).unwrap();
         assert_eq!(info.num_samples, n as u64);
         assert_eq!(info.samplerate_hz, 12_000_000);
+        assert_eq!(info.channel_names, names);
+        let g = CaptureFile::open(&back).unwrap();
+        assert_eq!(g.read_samples(0, n as u64).unwrap(), data);
+    }
+
+    #[test]
+    fn ch16_export_import_roundtrip() {
+        let dir = std::env::temp_dir().join("lv-store-tests");
+        let src = dir.join("sr16-src.lvcap");
+        let n = ENTRY_SAMPLES + 999;
+        let data: Vec<u8> = (0..n as u32)
+            .flat_map(|i| ((i / 7) as u16 ^ (i / 3000) as u16).to_le_bytes())
+            .collect();
+        let names: Vec<String> = (0..16).map(|i| format!("D{i}")).collect();
+        let mut w = CaptureWriter::create(
+            &src,
+            &NewCapture {
+                device: "test".into(),
+                samplerate_hz: 200_000_000,
+                channel_names: names.clone(),
+            },
+            true,
+        )
+        .unwrap();
+        w.push(&data).unwrap();
+        w.finish(Status::Complete).unwrap();
+        let sr = dir.join("roundtrip16.sr");
+        let f = CaptureFile::open(&src).unwrap();
+        assert_eq!(export(&f, &sr).unwrap(), n as u64);
+        let back = dir.join("roundtrip16-back.lvcap");
+        let (info, _) = import(&sr, &back, true).unwrap();
+        assert_eq!(info.num_channels, 16);
         assert_eq!(info.channel_names, names);
         let g = CaptureFile::open(&back).unwrap();
         assert_eq!(g.read_samples(0, n as u64).unwrap(), data);

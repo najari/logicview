@@ -13,7 +13,7 @@ Windows 기본 libusb에서 fx2lafw가 제대로 동작하도록 패치 3개를 
 
 `rust/`는 SLogicView + 패치한 libsigrok + Python MCP 서버 구성을 실행 파일 하나로 바꾼 새 버전이다
 (libsigrok 없이 USB를 직접 다루고, 디코더만 libsigrokdecode를 실행 중에 읽어 쓴다).
-FX2 애널라이저 외에 WeAct Logic Analyzer V2(U3, 8채널로 최대 200 MHz)에서도 수집한다.
+FX2 애널라이저 외에 WeAct Logic Analyzer V2(U3, 16채널 최대 200 MHz)에서도 수집한다.
 배포 zip(`logicview-0.1.8-windows-x64.zip`, 22 MB)은 압축만 풀면 쓴다. 설치 프로그램, Python,
 sigrok-cli, VC++ 재배포 패키지가 필요 없다.
 

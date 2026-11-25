@@ -78,7 +78,7 @@ enum St {
     Changing,
 }
 
-fn state(e: Option<Entry>, bit: u8) -> St {
+fn state(e: Option<Entry>, bit: u16) -> St {
     match e {
         None => St::None,
         Some(e) if e[1] & bit != 0 => St::High,
@@ -117,7 +117,7 @@ pub fn build(
                 .clamp(plot.left(), plot.right())
         };
         for row in rows {
-            let bit = 1u8 << row.channel;
+            let bit = 1u16 << row.channel;
             let mut run_start = a;
             let mut v = raw[0] & bit != 0;
             for (i, &s) in raw.iter().enumerate().skip(1) {
@@ -192,7 +192,7 @@ pub fn build(
 
     let x_at = |c: usize| plot.left() + c as f32;
     for row in rows {
-        let bit = 1u8 << row.channel;
+        let bit = 1u16 << row.channel;
         let fill = row.color.gamma_multiply(0.45);
         let mut run_start = 0usize;
         let mut run = state(px[0], bit);

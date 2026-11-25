@@ -14,8 +14,25 @@ pub use reader::{CaptureFile, ChunkMeta};
 pub use schema::{FORMAT, VERSION, now_rfc3339};
 pub use writer::{CaptureWriter, WriteStats};
 
-/// Raw samples per stored chunk (1 MiB at one byte per sample).
+/// Samples per stored chunk (1 MiB at one byte per sample).
 pub const CHUNK_SAMPLES: usize = 1 << 20;
+/// Most channels a capture holds (two bytes per sample).
+pub const MAX_CHANNELS: usize = 16;
+
+/// Bytes per sample for `channels` channels: 1 up to 8, 2 up to 16.
+pub fn unit_for(channels: usize) -> usize {
+    channels.div_ceil(8).clamp(1, 2)
+}
+
+/// Sample `i` of `data` (`unit` bytes each, little-endian); bit n = channel n.
+#[inline]
+pub fn sample_at(data: &[u8], i: usize, unit: usize) -> u16 {
+    if unit == 1 {
+        u16::from(data[i])
+    } else {
+        u16::from_le_bytes([data[2 * i], data[2 * i + 1]])
+    }
+}
 /// Chunks written per transaction while recording.
 pub const CHUNKS_PER_COMMIT: usize = 8;
 
@@ -69,6 +86,11 @@ pub struct CaptureInfo {
 }
 
 impl CaptureInfo {
+    /// Bytes per stored sample.
+    pub fn unitsize(&self) -> usize {
+        unit_for(self.num_channels)
+    }
+
     pub fn duration_secs(&self) -> f64 {
         self.num_samples as f64 / self.samplerate_hz.max(1) as f64
     }

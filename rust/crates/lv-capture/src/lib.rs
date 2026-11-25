@@ -33,6 +33,8 @@ pub enum Error {
     Store(#[from] lv_store::Error),
     #[error("capture thread stopped unexpectedly")]
     ThreadPanicked,
+    #[error("trigger: {0}")]
+    Trigger(String),
 }
 
 #[derive(Debug, Clone)]
@@ -205,8 +207,20 @@ pub struct Capture {
 impl Capture {
     /// Create the output file and start streaming from `device`.
     pub fn start(mut device: Device, req: CaptureRequest) -> Result<Capture, Error> {
-        // Validate the rate before touching the file.
+        // Validate the rate and channels before touching the file.
+        let channels = req.channel_names.len();
+        device.set_channels(channels)?;
         device.check_rate(req.samplerate)?;
+        if let Some(t) = &req.trigger
+            && t.max_channel() >= channels
+        {
+            return Err(Error::Trigger(format!(
+                "channel {} is not captured (channels 0..{})",
+                t.max_channel(),
+                channels - 1
+            )));
+        }
+        let unit = lv_store::unit_for(channels);
         if let Some(t) = req.threshold_volts {
             device.set_threshold(t)?;
         }
@@ -221,8 +235,8 @@ impl Capture {
         )?;
 
         let trigger = req.trigger.clone().map(|t| TriggerRun {
-            matcher: Matcher::new(&t),
-            pre: PreBuffer::new(req.pre_trigger_samples() as usize),
+            matcher: Matcher::new(&t, unit),
+            pre: PreBuffer::new(req.pre_trigger_samples() as usize, unit),
             trigger: t,
             limit: req.limit_samples,
         });
@@ -283,7 +297,7 @@ impl Capture {
                             Ok(()) => {
                                 progress
                                     .received
-                                    .fetch_add(data.len() as u64, Ordering::Relaxed);
+                                    .fetch_add((data.len() / unit) as u64, Ordering::Relaxed);
                                 let q = tx.len();
                                 progress.queued.store(q, Ordering::Relaxed);
                                 progress.queue_peak.fetch_max(q, Ordering::Relaxed);
@@ -398,27 +412,29 @@ impl Sink {
         let Some(t) = &mut self.trigger else {
             return self.writer.push(block);
         };
+        let unit = self.writer.unitsize();
         let mut block = block;
         if self.trigger_sample.is_none() {
             let Some(i) = t.matcher.find(block) else {
                 t.pre.push(block);
                 return Ok(());
             };
-            t.pre.push(&block[..i]);
+            t.pre.push(&block[..i * unit]);
             let (a, b) = t.pre.as_slices();
             self.writer.push(a)?;
             self.writer.push(b)?;
             let at = t.pre.len() as u64;
             self.writer.set_trigger(&t.trigger.to_json(at))?;
             self.trigger_sample = Some(at);
-            t.pre = PreBuffer::new(0);
-            block = &block[i..];
+            t.pre = PreBuffer::new(0, unit);
+            block = &block[i * unit..];
         }
+        let n = (block.len() / unit) as u64;
         let take = match t.limit {
-            Some(l) => (l.saturating_sub(self.writer.samples())).min(block.len() as u64) as usize,
-            None => block.len(),
+            Some(l) => l.saturating_sub(self.writer.samples()).min(n) as usize,
+            None => n as usize,
         };
-        self.writer.push(&block[..take])?;
+        self.writer.push(&block[..take * unit])?;
         if t.limit.is_some_and(|l| self.writer.samples() >= l) {
             self.done = true;
         }
@@ -505,8 +521,8 @@ mod tests {
         )
         .unwrap();
         let run = req.trigger.clone().map(|t| TriggerRun {
-            matcher: Matcher::new(&t),
-            pre: PreBuffer::new(req.pre_trigger_samples() as usize),
+            matcher: Matcher::new(&t, 1),
+            pre: PreBuffer::new(req.pre_trigger_samples() as usize, 1),
             trigger: t,
             limit,
         });

@@ -127,6 +127,8 @@ pub struct Remembered {
     pub pre_percent: u8,
     /// Signal level in volts for devices with a threshold (WeAct U3).
     pub level: f64,
+    /// Channels to capture where the device offers a choice (8 or 16).
+    pub channels: usize,
 }
 
 impl Remembered {
@@ -160,19 +162,20 @@ impl Remembered {
             }
             None => {}
         }
+        // Up to 0.1.8 eight channels were kept: they are the first ones.
         if let Some(names) = db
             .get("channels.names")
             .and_then(|v| json_list(&v, |x| x.as_str().map(String::from)))
-            && names.len() == r.names.len()
+            && names.len() <= r.names.len()
         {
-            r.names = names;
+            r.names[..names.len()].clone_from_slice(&names);
         }
         if let Some(shown) = db
             .get("channels.shown")
             .and_then(|v| json_list(&v, Value::as_bool))
-            && shown.len() == r.shown.len()
+            && shown.len() <= r.shown.len()
         {
-            r.shown = shown;
+            r.shown[..shown.len()].copy_from_slice(&shown);
         }
         if let Some(t) = db.get("trigger.text") {
             r.trigger_text = t;
@@ -186,6 +189,11 @@ impl Remembered {
             && lv_device::LEVELS.contains(&l)
         {
             r.level = l;
+        }
+        if let Some(n) = db.get("capture.channels").and_then(|v| v.parse().ok())
+            && matches!(n, 8 | 16)
+        {
+            r.channels = n;
         }
         r
     }
@@ -208,6 +216,7 @@ impl Remembered {
             ("trigger.text", self.trigger_text.clone()),
             ("trigger.pre_percent", self.pre_percent.to_string()),
             ("capture.level", self.level.to_string()),
+            ("capture.channels", self.channels.to_string()),
         ])
     }
 }
@@ -225,11 +234,12 @@ mod tests {
         Remembered {
             rate: 16_000_000,
             duration: Some(1.0),
-            names: (0..8).map(|i| format!("D{i}")).collect(),
-            shown: vec![true; 8],
+            names: (0..16).map(|i| format!("D{i}")).collect(),
+            shown: vec![true; 16],
             trigger_text: "0=f".into(),
             pre_percent: 10,
             level: 3.3,
+            channels: 16,
         }
     }
 
@@ -255,6 +265,8 @@ mod tests {
         r.names[0] = "TX".into();
         r.names[3] = "한글".into();
         r.shown[7] = false;
+        r.names[15] = "CS".into();
+        r.channels = 8;
         r.trigger_text = "0=r,1=1".into();
         r.pre_percent = 25;
         r.level = 1.8;
@@ -290,15 +302,40 @@ mod tests {
     }
 
     #[test]
+    fn ch16_eight_saved_names_fill_the_front() {
+        let (path, db) = temp_db("eight-names");
+        let eight: Vec<String> = (0..8).map(|i| format!("N{i}")).collect();
+        db.set_all(&[
+            ("channels.names", serde_json::to_string(&eight).unwrap()),
+            (
+                "channels.shown",
+                "[true,false,true,true,true,true,true,true]".into(),
+            ),
+        ])
+        .expect("set");
+        let r = Remembered::load(&db, defaults());
+        assert_eq!(r.names[..8], eight[..]);
+        assert_eq!(r.names[8], "D8");
+        assert_eq!(r.names.len(), 16);
+        assert!(!r.shown[1] && r.shown[15]);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn ui10_bad_values_keep_defaults() {
         let (path, db) = temp_db("bad");
         db.set_all(&[
             ("capture.rate", "12345".into()),
             ("capture.duration", "lots".into()),
-            ("channels.names", "[\"only one\"]".into()),
+            (
+                "channels.names",
+                serde_json::to_string(&vec!["x"; 17]).unwrap(),
+            ),
             ("channels.shown", "not json".into()),
             ("trigger.pre_percent", "300".into()),
             ("capture.level", "2.7".into()),
+            ("capture.channels", "12".into()),
         ])
         .expect("set");
         assert_eq!(Remembered::load(&db, defaults()), defaults());

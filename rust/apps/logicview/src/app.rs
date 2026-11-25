@@ -92,6 +92,8 @@ pub struct App {
     pre_percent: u8,
     /// Signal level in volts, for devices with a threshold (WeAct U3).
     level: f64,
+    /// Channels to capture on devices that offer a choice (WeAct U3: 8 or 16).
+    channels: usize,
     session: Option<Session>,
     last_refresh: Instant,
     /// Keep the whole capture in view while recording, until the user zooms.
@@ -156,8 +158,11 @@ pub struct Preset {
     pub markers: Vec<f64>,
 }
 
+/// Channels the app keeps names and visibility for.
+const MAX_CHANNELS: usize = lv_store::MAX_CHANNELS;
+
 fn default_names() -> Vec<String> {
-    (0..8).map(|i| format!("D{i}")).collect()
+    (0..MAX_CHANNELS).map(|i| format!("D{i}")).collect()
 }
 
 impl App {
@@ -197,13 +202,14 @@ impl App {
             trigger_text: "0=f".into(),
             pre_percent: 10,
             level: 3.3,
+            channels: MAX_CHANNELS,
             session: None,
             last_refresh: Instant::now(),
             follow: false,
             markers: [None; 2],
             show_channels: false,
             names: default_names(),
-            shown: vec![true; 8],
+            shown: vec![true; MAX_CHANNELS],
             analyzers: Vec::new(),
             decode: DecodeUi::default(),
             table: TableUi::default(),
@@ -220,6 +226,7 @@ impl App {
                 trigger_text: String::new(),
                 pre_percent: 0,
                 level: 0.0,
+                channels: 0,
             },
         };
         // MCP captures and the toolbar share one opened device.
@@ -267,6 +274,7 @@ impl App {
             trigger_text: self.trigger_text.clone(),
             pre_percent: self.pre_percent,
             level: self.level,
+            channels: self.channels,
         }
     }
 
@@ -278,6 +286,7 @@ impl App {
         self.trigger_text = r.trigger_text.clone();
         self.pre_percent = r.pre_percent;
         self.level = r.level;
+        self.channels = r.channels;
     }
 
     /// Write changed settings, once no text field is being edited (and on
@@ -338,12 +347,11 @@ impl App {
     /// Show `cv`, taking its channel names and visibility.
     fn set_capture(&mut self, cv: CaptureView) {
         let info = cv.info();
-        self.names = default_names();
-        self.shown = vec![true; 8];
-        for (i, n) in info.channel_names.iter().take(8).enumerate() {
+        // Channels the file does not have keep their current names.
+        for (i, n) in info.channel_names.iter().take(MAX_CHANNELS).enumerate() {
             self.names[i] = n.clone();
         }
-        for (i, &e) in info.channel_enabled.iter().take(8).enumerate() {
+        for (i, &e) in info.channel_enabled.iter().take(MAX_CHANNELS).enumerate() {
             self.shown[i] = e;
         }
         self.analyzers = decode_ui::load_analyzers(cv.file());
@@ -412,7 +420,7 @@ impl App {
                     lv_store::sigrok::export(cv.file(), &dest)?;
                 }
                 "csv" => {
-                    let chans: Vec<usize> = (0..cv.info().num_channels.min(8))
+                    let chans: Vec<usize> = (0..cv.info().num_channels.min(MAX_CHANNELS))
                         .filter(|&c| self.shown[c])
                         .collect();
                     lv_store::export::csv(cv.file(), &dest, &chans)?;
@@ -490,11 +498,22 @@ impl App {
         }
     }
 
+    /// Channels a capture from `found` takes: the chosen count if the
+    /// device offers it, else the most it has.
+    fn channels_for(&self, found: &Found) -> usize {
+        let choices = found.channel_choices();
+        if choices.contains(&self.channels) {
+            self.channels
+        } else {
+            choices.iter().copied().max().unwrap_or(8)
+        }
+    }
+
     /// Sample rates of the selected device (all known ones without a device).
     fn rates(&self) -> Vec<u64> {
         self.devices
             .get(self.dev_sel)
-            .map(Found::samplerates)
+            .map(|d| d.samplerates(self.channels_for(d)))
             .unwrap_or_else(lv_device::all_samplerates)
     }
 
@@ -518,10 +537,12 @@ impl App {
             self.message = Some("장치가 없습니다. 애널라이저를 꽂고 '다시 찾기'를 누르세요".into());
             return;
         };
-        if !found.samplerates().contains(&self.rate) {
+        let channels = self.channels_for(&found);
+        if !found.samplerates(channels).contains(&self.rate) {
             self.message = Some(format!(
-                "{}는 {}로 수집할 수 없습니다",
+                "{}는 {}채널 {}로 수집할 수 없습니다",
                 found.name(),
+                channels,
                 fmt_rate(self.rate)
             ));
             return;
@@ -549,7 +570,7 @@ impl App {
         };
         let limit = self.duration.map(|s| samples_for(self.rate, s));
         let mut req = CaptureRequest::new(self.rate, limit, path);
-        req.channel_names = self.names.clone();
+        req.channel_names = self.names[..channels].to_vec();
         req.trigger = trigger;
         req.threshold_volts = found
             .threshold_range()
@@ -817,6 +838,31 @@ impl App {
                             ui.selectable_value(&mut self.rate, r, fmt_rate(r));
                         }
                     });
+                let choices = self
+                    .devices
+                    .get(self.dev_sel)
+                    .map(Found::channel_choices)
+                    .unwrap_or(&[]);
+                if choices.len() > 1 {
+                    let before = self.channels;
+                    if !choices.contains(&self.channels) {
+                        self.channels = choices[choices.len() - 1];
+                    }
+                    ui.label("채널");
+                    egui::ComboBox::from_id_salt("channels")
+                        .selected_text(self.channels.to_string())
+                        .width(40.0)
+                        .show_ui(ui, |ui| {
+                            for &n in choices {
+                                ui.selectable_value(&mut self.channels, n, n.to_string());
+                            }
+                        })
+                        .response
+                        .on_hover_text(format!("D0~D{}을 수집", self.channels - 1));
+                    if self.channels != before {
+                        self.fit_rate();
+                    }
+                }
                 if self
                     .devices
                     .get(self.dev_sel)
@@ -995,6 +1041,18 @@ impl App {
         });
     }
 
+    /// Channels of the open capture, or of the next capture without one.
+    fn channel_count(&self) -> usize {
+        match &self.capture {
+            Some(cv) => cv.info().num_channels.clamp(1, MAX_CHANNELS),
+            None => self
+                .devices
+                .get(self.dev_sel)
+                .map(|d| self.channels_for(d))
+                .unwrap_or(8),
+        }
+    }
+
     fn channels_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_channels;
         let mut changed = false;
@@ -1004,7 +1062,8 @@ impl App {
             .default_width(260.0)
             .show(ctx, |ui| {
                 egui::Grid::new("channels").num_columns(3).show(ui, |ui| {
-                    for (c, &color) in COLORS.iter().enumerate() {
+                    for c in 0..self.channel_count() {
+                        let color = COLORS[c % COLORS.len()];
                         let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
                         ui.painter().rect_filled(r, CornerRadius::same(2), color);
                         changed |= ui.checkbox(&mut self.shown[c], format!("D{c}")).changed();
@@ -1017,7 +1076,7 @@ impl App {
                 });
                 ui.horizontal(|ui| {
                     if ui.button("모두 보기").clicked() {
-                        self.shown = vec![true; 8];
+                        self.shown = vec![true; MAX_CHANNELS];
                         changed = true;
                     }
                     if ui.button("이름 초기화").clicked() {
@@ -1094,7 +1153,7 @@ impl App {
         };
         let info = cv.info().clone();
         let rate = info.samplerate_hz.max(1) as f64;
-        let nch = info.num_channels.clamp(1, 8);
+        let nch = info.num_channels.clamp(1, MAX_CHANNELS);
         let chans: Vec<usize> = (0..nch).filter(|&c| self.shown[c]).collect();
         let ann_h: f32 = self.analyzers.iter().map(Analyzer::height).sum();
         let row_h = ((plot.height() - ann_h) / chans.len().max(1) as f32).clamp(24.0, 96.0);
@@ -1347,7 +1406,7 @@ fn snap_to_edge(cv: &mut CaptureView, ch: usize, s: f64, radius: f64) -> Option<
     let a = (s - radius).floor().max(1.0) as u64 - 1;
     let b = (s + radius).ceil().max(0.0) as u64 + 1;
     let raw = cv.raw(a, b).ok()?;
-    let bit = 1u8 << ch;
+    let bit = 1u16 << ch;
     raw.windows(2)
         .enumerate()
         .filter(|(_, w)| (w[0] ^ w[1]) & bit != 0)
@@ -1456,10 +1515,10 @@ impl eframe::App for App {
         });
         self.channels_window(&ctx);
         let recording = self.session.is_some();
-        let file = self
-            .capture
-            .as_ref()
-            .map(|c| (c.path().to_path_buf(), self.names.clone()));
+        let file = self.capture.as_ref().map(|c| {
+            let n = c.info().num_channels.clamp(1, MAX_CHANNELS);
+            (c.path().to_path_buf(), self.names[..n].to_vec())
+        });
         self.decode.window(
             &ctx,
             file.as_ref().map(|(p, n)| (p.as_path(), n.as_slice())),

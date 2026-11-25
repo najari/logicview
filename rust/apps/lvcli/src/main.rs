@@ -171,6 +171,9 @@ struct DeviceArgs {
     /// 신호 레벨(V, 1.0~3.3). 입력 문턱을 조절할 수 있는 장치(WeAct U3)에서 문턱을 이 레벨에 맞춤
     #[arg(long)]
     level: Option<f64>,
+    /// 수집할 채널 수 (WeAct U3: 8 또는 16). 없으면 장치의 최대
+    #[arg(long)]
+    channels: Option<usize>,
 }
 
 fn main() {
@@ -254,18 +257,23 @@ fn devices() -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<12} {:<10} {:<30} {:<18} 샘플레이트",
-        "위치", "VID:PID", "모델", "상태"
+        "{:<12} {:<10} {:<30} {:<18} {:<6} 샘플레이트",
+        "위치", "VID:PID", "모델", "상태", "채널"
     );
     for d in list {
-        let rates = d.samplerates();
+        let rates = d.samplerates(d.max_channels());
         println!(
-            "{:<12} {:04x}:{:04x}  {:<30} {:<18} {}~{}",
+            "{:<12} {:04x}:{:04x}  {:<30} {:<18} {:<6} {}~{}",
             d.location(),
             d.info().vendor_id(),
             d.info().product_id(),
             d.name(),
             d.status(),
+            d.channel_choices()
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("/"),
             rates.first().map(|&r| fmt_rate(r)).unwrap_or_default(),
             rates.last().map(|&r| fmt_rate(r)).unwrap_or_default(),
         );
@@ -334,9 +342,14 @@ fn capture(
     check_level(args)?;
     let mut req = request(rate, samples, output, overwrite, args);
     if let Some(names) = &opts.names {
-        if names.len() > 8 {
-            bail!("채널 이름은 8개까지입니다 ({}개를 줌)", names.len());
+        if names.len() > lv_store::MAX_CHANNELS {
+            bail!(
+                "채널 이름은 {}개까지입니다 ({}개를 줌)",
+                lv_store::MAX_CHANNELS,
+                names.len()
+            );
         }
+        req.channel_names.resize(names.len().max(8), String::new());
         for (i, n) in names.iter().enumerate() {
             req.channel_names[i] = n.clone();
         }
@@ -350,6 +363,18 @@ fn capture(
         );
     }
     let dev = open_device(args)?;
+    let n = args.channels.unwrap_or(dev.max_channels());
+    if req.channel_names.len() < n {
+        req.channel_names = (0..n)
+            .map(|i| {
+                req.channel_names
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| format!("D{i}"))
+            })
+            .collect();
+    }
+    req.channel_names.truncate(n);
     let cap = Capture::start(dev, req)?;
     let deadline = opts.time.map(Duration::from_secs_f64);
 
@@ -476,7 +501,10 @@ fn bench(
     for run in 1..=runs {
         let path = dir.join(format!("bench-{run}.lvcap"));
         let d = dev.take().context("장치를 다시 열 수 없습니다")?;
-        let cap = Capture::start(d, request(rate, Some(samples), &path, true, args))?;
+        let mut req = request(rate, Some(samples), &path, true, args);
+        let n = args.channels.unwrap_or(d.max_channels());
+        req.channel_names = (0..n).map(|i| format!("D{i}")).collect();
+        let cap = Capture::start(d, req)?;
         let (back, report) = cap.wait();
         dev = back;
         let r = report?;

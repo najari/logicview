@@ -4,6 +4,8 @@
 
 use std::collections::VecDeque;
 
+use lv_store::{MAX_CHANNELS, sample_at};
+
 /// Condition on one channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cond {
@@ -64,8 +66,8 @@ impl Trigger {
                 .unwrap_or(ch)
                 .parse::<usize>()
                 .ok()
-                .filter(|&c| c < 8)
-                .ok_or(format!("'{part}': channel must be 0..7"))?;
+                .filter(|&c| c < MAX_CHANNELS)
+                .ok_or(format!("'{part}': channel must be 0..{}", MAX_CHANNELS - 1))?;
             let cond = Cond::parse(cond.trim()).ok_or(format!(
                 "'{part}': condition must be r (rising), f (falling), e (edge), 1 (high) or 0 (low)"
             ))?;
@@ -82,6 +84,11 @@ impl Trigger {
             conditions,
             pre_percent,
         })
+    }
+
+    /// The highest channel a condition is on.
+    pub fn max_channel(&self) -> usize {
+        self.conditions.iter().map(|&(c, _)| c).max().unwrap_or(0)
     }
 
     /// Canonical text form, e.g. `0=r,3=1`.
@@ -106,17 +113,21 @@ impl Trigger {
 /// Finds the first sample that meets every condition.
 #[derive(Debug, Clone)]
 pub struct Matcher {
-    level_mask: u8,
-    level_value: u8,
-    rise: u8,
-    fall: u8,
-    edge: u8,
-    prev: Option<u8>,
+    /// Bytes per sample.
+    unit: usize,
+    level_mask: u16,
+    level_value: u16,
+    rise: u16,
+    fall: u16,
+    edge: u16,
+    prev: Option<u16>,
 }
 
 impl Matcher {
-    pub fn new(t: &Trigger) -> Matcher {
+    /// A matcher for samples of `unit` bytes.
+    pub fn new(t: &Trigger, unit: usize) -> Matcher {
         let mut m = Matcher {
+            unit,
             level_mask: 0,
             level_value: 0,
             rise: 0,
@@ -125,7 +136,7 @@ impl Matcher {
             prev: None,
         };
         for &(c, cond) in &t.conditions {
-            let bit = 1u8 << c;
+            let bit = 1u16 << c;
             match cond {
                 Cond::High => {
                     m.level_mask |= bit;
@@ -140,17 +151,22 @@ impl Matcher {
         m
     }
 
-    fn hit(&self, prev: u8, cur: u8) -> bool {
+    fn hit(&self, prev: u16, cur: u16) -> bool {
         cur & self.level_mask == self.level_value
             && !prev & cur & self.rise == self.rise
             && prev & !cur & self.fall == self.fall
             && (prev ^ cur) & self.edge == self.edge
     }
 
-    /// Index in `data` of the trigger sample, carrying the last sample
-    /// across calls so edges between blocks count.
+    /// Sample index in `data` of the trigger sample, carrying the last
+    /// sample across calls so edges between blocks count.
     pub fn find(&mut self, data: &[u8]) -> Option<usize> {
-        let &last = data.last()?;
+        let n = data.len() / self.unit;
+        if n == 0 {
+            return None;
+        }
+        let at = |i| sample_at(data, i, self.unit);
+        let last = at(n - 1);
         let needs_edge = self.rise | self.fall | self.edge != 0;
         let mut start = 0;
         let mut prev = match self.prev {
@@ -158,11 +174,12 @@ impl Matcher {
             None if needs_edge => {
                 // An edge needs a sample before it.
                 start = 1;
-                data[0]
+                at(0)
             }
-            None => data[0], // a level can fire on the very first sample
+            None => at(0), // a level can fire on the very first sample
         };
-        for (i, &cur) in data.iter().enumerate().skip(start) {
+        for i in start..n {
+            let cur = at(i);
             if self.hit(prev, cur) {
                 self.prev = Some(cur);
                 return Some(i);
@@ -174,17 +191,23 @@ impl Matcher {
     }
 }
 
-/// Keeps the newest `cap` samples seen before the trigger.
+/// Keeps the newest samples seen before the trigger (whole samples are
+/// pushed, so the bytes stay aligned).
 #[derive(Debug)]
 pub struct PreBuffer {
+    /// Bytes kept.
     cap: usize,
+    unit: usize,
     buf: VecDeque<u8>,
 }
 
 impl PreBuffer {
-    pub fn new(cap: usize) -> PreBuffer {
+    /// Keep `samples` samples of `unit` bytes.
+    pub fn new(samples: usize, unit: usize) -> PreBuffer {
+        let cap = samples * unit;
         PreBuffer {
             cap,
+            unit,
             buf: VecDeque::with_capacity(cap.min(64 << 20)),
         }
     }
@@ -199,8 +222,9 @@ impl PreBuffer {
         self.buf.extend(data);
     }
 
+    /// Samples kept.
     pub fn len(&self) -> usize {
-        self.buf.len()
+        self.buf.len() / self.unit
     }
 
     pub fn is_empty(&self) -> bool {
@@ -218,7 +242,7 @@ mod tests {
     use super::*;
 
     fn find_all(t: &str, blocks: &[&[u8]]) -> Option<usize> {
-        let mut m = Matcher::new(&Trigger::parse(t, 0).unwrap());
+        let mut m = Matcher::new(&Trigger::parse(t, 0).unwrap(), 1);
         let mut base = 0;
         for b in blocks {
             if let Some(i) = m.find(b) {
@@ -238,7 +262,8 @@ mod tests {
             t.to_json(42),
             r#"{"conditions":"0=r,3=1","pre_percent":10,"sample":42}"#
         );
-        for bad in ["", "8=r", "0=x", "0=r,0=f", "0r"] {
+        assert_eq!(Trigger::parse("15=f", 0).unwrap().max_channel(), 15);
+        for bad in ["", "16=r", "0=x", "0=r,0=f", "0r"] {
             assert!(Trigger::parse(bad, 0).is_err(), "{bad}");
         }
         assert!(Trigger::parse("0=r", 101).is_err());
@@ -268,7 +293,7 @@ mod tests {
 
     #[test]
     fn cap8_pre_buffer_keeps_newest() {
-        let mut p = PreBuffer::new(5);
+        let mut p = PreBuffer::new(5, 1);
         p.push(&[1, 2, 3]);
         p.push(&[4, 5, 6, 7]);
         let (a, b) = p.as_slices();
@@ -276,8 +301,27 @@ mod tests {
         p.push(&[10, 11, 12, 13, 14, 15, 16]);
         let (a, b) = p.as_slices();
         assert_eq!([a, b].concat(), vec![12, 13, 14, 15, 16]);
-        let mut z = PreBuffer::new(0);
+        let mut z = PreBuffer::new(0, 1);
         z.push(&[1, 2]);
         assert!(z.is_empty());
+        // Two-byte samples: three kept, the oldest whole sample dropped.
+        let mut w = PreBuffer::new(3, 2);
+        w.push(&[1, 0, 2, 0]);
+        w.push(&[3, 0, 4, 1]);
+        assert_eq!(w.len(), 3);
+        let (a, b) = w.as_slices();
+        assert_eq!([a, b].concat(), vec![2, 0, 3, 0, 4, 1]);
+    }
+
+    #[test]
+    fn ch16_trigger_on_upper_channels() {
+        // D12 rises at sample 3; D9 is high from sample 2.
+        let s: [u16; 5] = [0x0000, 0x0000, 0x0200, 0x1200, 0x1200];
+        let data: Vec<u8> = s.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut m = Matcher::new(&Trigger::parse("12=r,9=1", 0).unwrap(), 2);
+        assert_eq!(m.find(&data[..4]), None);
+        assert_eq!(m.find(&data[4..]), Some(1)); // sample 3 overall
+        let mut m = Matcher::new(&Trigger::parse("9=r", 0).unwrap(), 2);
+        assert_eq!(m.find(&data), Some(2));
     }
 }

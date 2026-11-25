@@ -102,3 +102,56 @@ fn dec1_uart_bytes_through_libsigrokdecode() {
         .unwrap();
     assert!(d.annotations.is_empty(), "D1 is idle");
 }
+
+#[test]
+fn ch16_uart_on_d12() {
+    let rt = match lv_decode::runtime() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            return;
+        }
+    };
+    // The 8-channel UART capture moved to D12 of a 16-channel one, with D3
+    // held high so the low byte is not idle.
+    let src = uart_capture("uart8.lvcap", b"Hi");
+    let bytes = src.read_samples(0, src.info.num_samples).unwrap();
+    let data: Vec<u8> = bytes
+        .iter()
+        .flat_map(|&b| ((u16::from(b & 1) << 12) | 0x0008).to_le_bytes())
+        .collect();
+    let path = std::env::temp_dir()
+        .join("lv-decode-tests")
+        .join("uart16.lvcap");
+    let mut w = CaptureWriter::create(
+        &path,
+        &NewCapture {
+            device: "test".into(),
+            samplerate_hz: 1_000_000,
+            channel_names: (0..16).map(|i| format!("D{i}")).collect(),
+        },
+        true,
+    )
+    .unwrap();
+    w.push(&data).unwrap();
+    w.finish(Status::Complete).unwrap();
+    let f = CaptureFile::open(&path).unwrap();
+    let stack = parse_stack("uart:rx=D12:format=ascii").unwrap();
+    let d = rt.decode(&f, &stack, &Control::default()).unwrap();
+    let texts: Vec<&str> = d
+        .annotations
+        .iter()
+        .filter(|a| d.stack[0].class_id(a.class) == "rx-data")
+        .map(|a| a.texts[0].as_str())
+        .collect();
+    assert_eq!(texts, ["H", "i"]);
+    let bad = rt
+        .decode(
+            &f,
+            &parse_stack("uart:rx=D16").unwrap(),
+            &Control::default(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(bad.contains("D0..D15"), "{bad}");
+}

@@ -28,8 +28,10 @@ pub const CMD_GET_LOGIC_PARAMS: u8 = 0xa4;
 pub const CMD_GET_LOGIC_LEVEL: u8 = 0xa5;
 pub const CMD_GET_VERSION: u8 = 0xac;
 
-/// Bytes per sample on the wire: 8 channels (D0..D7, bit n = channel n).
+/// Sample width codes: 8 channels (D0..D7, one byte) or 16 channels
+/// (D0..D15, two bytes little-endian). Bit n = channel n.
 pub const SAMPLE_WIDTH_8BIT: u8 = 0x08;
+pub const SAMPLE_WIDTH_16BIT: u8 = 0x10;
 
 /// Logic sample rates over USB 3.0. The index of a rate is the divider
 /// index sent to the device, so the order must not change.
@@ -67,15 +69,32 @@ pub const RATES_USB2_8CH: &[u64] = &[
     40_000_000, 30_000_000, 20_000_000, 16_000_000, 12_000_000, 8_000_000, 6_000_000, 4_000_000,
 ];
 
+/// Logic sample rates over USB 2.0 with 16 channels.
+pub const RATES_USB2_16CH: &[u64] = &[
+    20_000_000, 16_000_000, 12_000_000, 8_000_000, 6_000_000, 4_000_000,
+];
+
 /// Every rate any link offers.
 pub const ALL_RATES: &[u64] = RATES_USB3;
 
-/// Rates the device offers on a link of this USB version (bcdUSB).
-pub fn rates_for(bcd_usb: u16) -> &'static [u64] {
+/// Rates the device offers on a link of this USB version (bcdUSB) with
+/// 8 or 16 channels.
+pub fn rates_for(bcd_usb: u16, channels: u8) -> &'static [u64] {
     if bcd_usb >= 0x0300 {
         RATES_USB3
+    } else if channels > 8 {
+        RATES_USB2_16CH
     } else {
         RATES_USB2_8CH
+    }
+}
+
+/// The channel mode for `n` channels: 8 or 16.
+pub fn channel_mode(n: usize) -> Option<u8> {
+    match n {
+        1..=8 => Some(8),
+        9..=16 => Some(16),
+        _ => None,
     }
 }
 
@@ -157,9 +176,9 @@ pub fn reply_data(cmd: u8, reply: &[u8]) -> Result<Vec<u8>, Error> {
 
 /// Bytes per bulk read: about 10 ms of samples, whole 16 KiB SuperSpeed
 /// bursts, between 64 KiB and 1 MiB.
-pub fn transfer_size(samplerate: u64) -> usize {
+pub fn transfer_size(samplerate: u64, unit: usize) -> usize {
     const BURST: usize = 16 * 1024;
-    let s = (samplerate / 100) as usize;
+    let s = (samplerate / 100) as usize * unit;
     s.div_ceil(BURST).clamp(4, 64) * BURST
 }
 
@@ -176,8 +195,14 @@ mod tests {
         assert_eq!(divider(RATES_USB2_8CH, 4_000_000).unwrap(), 7);
         assert!(divider(RATES_USB2_8CH, 200_000_000).is_err());
         assert_eq!(RATES_USB3.len(), 25);
-        assert_eq!(rates_for(0x0300).len(), 25);
-        assert_eq!(rates_for(0x0210), RATES_USB2_8CH);
+        assert_eq!(rates_for(0x0300, 16).len(), 25);
+        assert_eq!(rates_for(0x0210, 8), RATES_USB2_8CH);
+        assert_eq!(rates_for(0x0210, 16), RATES_USB2_16CH);
+        assert_eq!(divider(RATES_USB2_16CH, 20_000_000).unwrap(), 0);
+        assert!(divider(RATES_USB2_16CH, 40_000_000).is_err());
+        assert_eq!(channel_mode(3), Some(8));
+        assert_eq!(channel_mode(16), Some(16));
+        assert_eq!(channel_mode(17), None);
     }
 
     #[test]
@@ -219,11 +244,12 @@ mod tests {
 
     #[test]
     fn u3_transfer_sizes() {
-        assert_eq!(transfer_size(200_000_000), 1 << 20);
-        assert_eq!(transfer_size(4_000_000), 64 * 1024);
-        assert_eq!(transfer_size(20_000_000), 208 * 1024);
+        assert_eq!(transfer_size(200_000_000, 1), 1 << 20);
+        assert_eq!(transfer_size(4_000_000, 1), 64 * 1024);
+        assert_eq!(transfer_size(20_000_000, 1), 208 * 1024);
+        assert_eq!(transfer_size(20_000_000, 2), 400 * 1024);
         for &r in RATES_USB3 {
-            assert_eq!(transfer_size(r) % (16 * 1024), 0);
+            assert_eq!(transfer_size(r, 2) % (16 * 1024), 0);
         }
     }
 }

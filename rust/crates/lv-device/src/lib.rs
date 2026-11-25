@@ -15,6 +15,12 @@ pub enum Error {
     U3(#[from] lv_u3::Error),
     #[error("{0} has no adjustable input threshold")]
     NoThreshold(String),
+    #[error("{name} samples at most {max} channels ({asked} asked for)")]
+    Channels {
+        name: String,
+        max: usize,
+        asked: usize,
+    },
 }
 
 /// An analyzer seen on the bus.
@@ -55,11 +61,32 @@ impl Found {
         }
     }
 
-    /// Sample rates the device offers, slowest first.
-    pub fn samplerates(&self) -> Vec<u64> {
+    /// Channels the device can sample.
+    pub fn max_channels(&self) -> usize {
+        match self {
+            Found::Fx2(_) => 8,
+            Found::U3(_) => 16,
+        }
+    }
+
+    /// Channel counts a capture can choose (the device samples D0..D(n-1)).
+    pub fn channel_choices(&self) -> &'static [usize] {
+        match self {
+            Found::Fx2(_) => &[8],
+            Found::U3(_) => &[8, 16],
+        }
+    }
+
+    /// Sample rates the device offers with `channels` channels, slowest
+    /// first.
+    pub fn samplerates(&self, channels: usize) -> Vec<u64> {
         let mut r = match self {
             Found::Fx2(_) => lv_fx2lafw::SAMPLERATES.to_vec(),
-            Found::U3(f) => lv_u3::protocol::rates_for(f.info.usb_version()).to_vec(),
+            Found::U3(f) => lv_u3::protocol::rates_for(
+                f.info.usb_version(),
+                lv_u3::protocol::channel_mode(channels).unwrap_or(16),
+            )
+            .to_vec(),
         };
         r.sort_unstable();
         r
@@ -182,7 +209,31 @@ impl Device {
         }
     }
 
-    /// Sample rates of this device, slowest first.
+    /// Channels the device can sample.
+    pub fn max_channels(&self) -> usize {
+        match self {
+            Device::Fx2(_) => 8,
+            Device::U3(_) => 16,
+        }
+    }
+
+    /// Sample `n` channels (D0..D(n-1)) from now on.
+    pub fn set_channels(&mut self, n: usize) -> Result<(), Error> {
+        if n == 0 || n > self.max_channels() {
+            return Err(Error::Channels {
+                name: self.name().to_string(),
+                max: self.max_channels(),
+                asked: n,
+            });
+        }
+        match self {
+            Device::Fx2(_) => Ok(()),
+            Device::U3(d) => Ok(d.set_channels(n)?),
+        }
+    }
+
+    /// Sample rates of this device with its current channel count,
+    /// slowest first.
     pub fn samplerates(&self) -> Vec<u64> {
         let mut r = match self {
             Device::Fx2(_) => lv_fx2lafw::SAMPLERATES.to_vec(),
@@ -208,7 +259,7 @@ impl Device {
     pub fn transfer_size(&self, rate: u64) -> usize {
         match self {
             Device::Fx2(_) => lv_fx2lafw::protocol::transfer_size(rate),
-            Device::U3(_) => lv_u3::protocol::transfer_size(rate),
+            Device::U3(d) => lv_u3::protocol::transfer_size(rate, d.unitsize()),
         }
     }
 
@@ -227,7 +278,8 @@ impl Device {
         }
     }
 
-    /// Stream one byte per sample (bit n = D<n>) into `sink`; see
+    /// Stream samples (one byte each up to 8 channels, two little-endian
+    /// bytes for more; bit n = D<n>) into `sink`; see
     /// [`lv_fx2lafw::Fx2lafw::stream`].
     pub fn stream(
         &mut self,

@@ -45,7 +45,8 @@ impl CaptureView {
             self.levels[l] = combine(&self.levels[l - 1], LEVEL_FACTOR);
         }
         // A part-filled chunk may have grown since it was cached.
-        self.cache.retain(|(_, d)| d.len() == CHUNK_SAMPLES);
+        let full = CHUNK_SAMPLES * self.file.info.unitsize();
+        self.cache.retain(|(_, d)| d.len() == full);
         Ok(())
     }
 
@@ -86,8 +87,9 @@ impl CaptureView {
         Ok(data)
     }
 
-    /// Raw samples `[start, end)`, clipped to the capture.
-    pub fn raw(&mut self, start: u64, end: u64) -> lv_store::Result<Vec<u8>> {
+    /// Raw samples `[start, end)`, clipped to the capture; bit n = channel n.
+    pub fn raw(&mut self, start: u64, end: u64) -> lv_store::Result<Vec<u16>> {
+        let unit = self.file.info.unitsize();
         let end = end.min(self.num_samples());
         let mut out = Vec::with_capacity(end.saturating_sub(start) as usize);
         let mut pos = start;
@@ -95,8 +97,8 @@ impl CaptureView {
             let idx = (pos / CHUNK_SAMPLES as u64) as usize;
             let chunk = self.chunk(idx)?;
             let off = (pos % CHUNK_SAMPLES as u64) as usize;
-            let take = ((end - pos) as usize).min(chunk.len() - off);
-            out.extend_from_slice(&chunk[off..off + take]);
+            let take = ((end - pos) as usize).min(chunk.len() / unit - off);
+            out.extend((off..off + take).map(|i| lv_store::sample_at(&chunk, i, unit)));
             pos += take as u64;
         }
         Ok(out)

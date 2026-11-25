@@ -694,14 +694,22 @@ impl Runtime {
         ctl.total.store(file.info.num_samples, Ordering::Relaxed);
         ctl.done.store(0, Ordering::Relaxed);
         let mut failed = None;
+        let unit = file.info.unitsize();
         file.for_each_chunk(|first, data| {
             if ctl.cancel.load(Ordering::Relaxed) {
                 failed = Some(Error::Cancelled);
                 return Err(lv_store::Error::Corrupt("cancelled".into()));
             }
-            let end = first + data.len() as u64;
+            let end = first + (data.len() / unit) as u64;
             let rc = unsafe {
-                (api.srd_session_send)(sess, first, end, data.as_ptr(), data.len() as u64, 1)
+                (api.srd_session_send)(
+                    sess,
+                    first,
+                    end,
+                    data.as_ptr(),
+                    data.len() as u64,
+                    unit as u64,
+                )
             };
             if rc != ffi::SRD_OK {
                 failed = Some(Error::Decode(take_log().join("\n")));
@@ -770,8 +778,9 @@ impl Runtime {
                     )));
                 }
                 chans.push((k.clone(), resolve_channel(v, names).ok_or_else(|| {
+                    let last = names.len().max(1) - 1;
                     Error::Spec(format!(
-                        "{}: channel '{v}' for '{k}' does not exist (use 0..7, D0..D7 or a channel name)",
+                        "{}: channel '{v}' for '{k}' does not exist (use 0..{last}, D0..D{last} or a channel name)",
                         info.id
                     ))
                 })?));

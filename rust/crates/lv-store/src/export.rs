@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::{CaptureFile, Error, Result};
+use crate::{CaptureFile, Error, Result, sample_at};
 
 /// Channels to export: the given ones, or every channel of the capture.
 fn pick_channels(f: &CaptureFile, channels: &[usize]) -> Result<Vec<usize>> {
@@ -35,7 +35,8 @@ fn io(path: &Path) -> impl Fn(std::io::Error) -> Error + '_ {
 /// Write a CSV of the selected channels. Returns the number of data rows.
 pub fn csv(f: &CaptureFile, out: &Path, channels: &[usize]) -> Result<u64> {
     let chans = pick_channels(f, channels)?;
-    let mask = chans.iter().fold(0u8, |m, &c| m | 1 << c);
+    let mask = chans.iter().fold(0u16, |m, &c| m | 1 << c);
+    let unit = f.info.unitsize();
     let rate = f.info.samplerate_hz.max(1) as f64;
     let file = File::create(out).map_err(io(out))?;
     let mut w = BufWriter::with_capacity(1 << 20, file);
@@ -47,11 +48,11 @@ pub fn csv(f: &CaptureFile, out: &Path, channels: &[usize]) -> Result<u64> {
     w.write_all(header.as_bytes()).map_err(io(out))?;
 
     let mut rows = 0u64;
-    let mut prev: Option<u8> = None;
+    let mut prev: Option<u16> = None;
     let mut line = String::with_capacity(64);
     f.for_each_chunk(|first, data| {
-        for (i, &b) in data.iter().enumerate() {
-            let v = b & mask;
+        for i in 0..data.len() / unit {
+            let v = sample_at(data, i, unit) & mask;
             if prev == Some(v) {
                 continue;
             }
@@ -72,7 +73,7 @@ pub fn csv(f: &CaptureFile, out: &Path, channels: &[usize]) -> Result<u64> {
     Ok(rows)
 }
 
-/// Write the raw samples, one byte each (like `sigrok-cli -O binary`).
+/// Write the raw samples, one or two bytes each (like `sigrok-cli -O binary`).
 pub fn raw(f: &CaptureFile, out: &Path) -> Result<u64> {
     let mut w = BufWriter::with_capacity(1 << 20, File::create(out).map_err(io(out))?);
     f.for_each_chunk(|_, data| w.write_all(data).map_err(io(out)))?;
@@ -94,15 +95,16 @@ pub fn saleae_binary(
     std::fs::create_dir_all(dir).map_err(io(dir))?;
     let rate = f.info.samplerate_hz.max(1) as f64;
     let end_time = f.info.num_samples as f64 / rate;
+    let unit = f.info.unitsize();
     let initial = if f.info.num_samples > 0 {
-        f.read_samples(0, 1)?[0]
+        sample_at(&f.read_samples(0, 1)?, 0, unit)
     } else {
         0
     };
 
     struct Out {
         path: PathBuf,
-        bit: u8,
+        bit: u16,
         w: BufWriter<File>,
         count: u64,
     }
@@ -130,7 +132,8 @@ pub fn saleae_binary(
 
     let mut prev = initial;
     f.for_each_chunk(|first, data| {
-        for (i, &b) in data.iter().enumerate() {
+        for i in 0..data.len() / unit {
+            let b = sample_at(data, i, unit);
             let changed = b ^ prev;
             if changed == 0 {
                 continue;
@@ -201,6 +204,43 @@ mod tests {
         // Only D1: rows where D1 changes.
         assert_eq!(csv(&f, &out, &[1]).unwrap(), 2);
         assert!(csv(&f, &out, &[8]).is_err());
+    }
+
+    #[test]
+    fn ch16_csv_and_binary() {
+        let dir = std::env::temp_dir().join("lv-store-tests");
+        let path = dir.join("export16.lvcap");
+        let mut w = CaptureWriter::create(
+            &path,
+            &NewCapture {
+                device: "test".into(),
+                samplerate_hz: 10_000,
+                channel_names: (0..16).map(|i| format!("D{i}")).collect(),
+            },
+            true,
+        )
+        .unwrap();
+        // D9: 0,1,1,0  D0: 1,1,0,0
+        for s in [0x0001u16, 0x0201, 0x0200, 0x0000] {
+            w.push(&s.to_le_bytes()).unwrap();
+        }
+        w.finish(Status::Complete).unwrap();
+        let f = CaptureFile::open(&path).unwrap();
+        let out = path.with_extension("csv");
+        assert_eq!(csv(&f, &out, &[0, 9]).unwrap(), 4);
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "Time [s],Channel 0,Channel 9\n\
+             0.000000000,1,0\n\
+             0.000100000,1,1\n\
+             0.000200000,0,1\n\
+             0.000300000,0,0\n"
+        );
+        let bin = dir.join("bin16");
+        let files = saleae_binary(&f, &bin, &[9]).unwrap();
+        assert_eq!(files[0].1, 2);
+        let b = std::fs::read(bin.join("digital_9.bin")).unwrap();
+        assert_eq!(i32::from_le_bytes(b[16..20].try_into().unwrap()), 0);
     }
 
     #[test]

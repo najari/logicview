@@ -2,7 +2,7 @@ logicview {VERSION} (Windows x64)
 ==================================
 
 FX2 칩 로직 애널라이저(Saleae Logic 호환 클론, USB 0925:3881, 8채널, 최대 24 MHz)와
-WeAct Logic Analyzer V2(U3, USB 1a86:5537, 8채널로 최대 200 MHz)용 수집·파형·디코딩 앱.
+WeAct Logic Analyzer V2(U3, USB 1a86:5537, 16채널 최대 200 MHz)용 수집·파형·디코딩 앱.
 압축을 풀기만 하면 쓸 수 있다. 설치 프로그램, Python, sigrok-cli, VC++ 재배포 패키지가 필요 없다.
 
 
@@ -17,7 +17,8 @@ Zadig 창을 조작해 주는 스크립트도 있다 (관리자 권한으로):
 PulseView·SLogicView에서 이미 쓰던 애널라이저면 이 단계는 필요 없다.
 
 WeAct Logic Analyzer V2는 드라이버를 바꾸지 않아도 된다. WeAct 프로그램이 까는 CH375 드라이버
-(CH375DLL64.DLL)로 쓰고, WinUSB로 바꿨으면(펌웨어 0.2) 그것으로 쓴다. D0~D7 8채널만 수집한다.
+(CH375DLL64.DLL)로 쓰고, WinUSB로 바꿨으면(펌웨어 0.2) 그것으로 쓴다. 8채널(D0~D7) 또는
+16채널(D0~D15)로 수집한다 (USB 2.0으로 연결되면 16채널은 20 MHz까지, 8채널은 40 MHz까지).
 
 
 2. 앱
@@ -25,7 +26,7 @@ WeAct Logic Analyzer V2는 드라이버를 바꾸지 않아도 된다. WeAct 프
 logicview.exe 를 실행한다.
 
 - 위 줄: 장치, 샘플레이트(고른 장치의 것), 시간(0.1~60초 또는 수동 중지), 트리거(예: 0=f,1=1), 시작/중지.
-  WeAct U3를 고르면 "레벨"(신호의 High 전압 1.0~3.3 V)이 나오고 입력 문턱을 거기에 맞춘다.
+  WeAct U3를 고르면 "채널"(8 또는 16)과 "레벨"(신호의 High 전압 1.0~3.3 V)이 나온다.
   샘플 수는 샘플레이트 × 시간이다 (시간 칸에 마우스를 올리면 보인다).
   처음 열 때 펌웨어(firmware\fx2lafw-saleae-logic.fw)를 올리느라 2초쯤 걸린다.
   수집 중에는 파형이 실시간으로 늘어난다. 수집 파일은 %LOCALAPPDATA%\logicview\captures 에 쌓인다.
@@ -49,7 +50,8 @@ logicview.exe 를 실행한다.
   lvcli decoders [uart]
   lvcli decode cap.lvcap -P uart:rx=D0:baudrate=115200 -A uart=rx-data [--save]
   lvcli bench -r 24M -s 50M -n 5            (이 PC의 USB 포트가 24 MHz를 끊김 없이 받는지)
-  lvcli capture -d usb/1-14 -r 200M -s 400M --level 3.3 -o u3.lvcap   (WeAct U3, 3.3 V 신호)
+  lvcli capture -d usb/1-14 -r 200M -s 400M --level 3.3 -o u3.lvcap   (WeAct U3, 16채널, 3.3 V 신호)
+  lvcli capture -r 200M -s 400M --channels 8 -o u3-8.lvcap               (8채널만: 파일이 절반)
 
 
 4. MCP (Claude Code 등에서 Saleae Logic 2 MCP 도구로 쓰기)

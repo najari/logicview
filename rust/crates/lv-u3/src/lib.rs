@@ -1,6 +1,6 @@
 //! Driver for the WeAct Studio Logic Analyzer V2 ("U3", CH32H417, USB
-//! `1a86:5537`): 16 channels, up to 200 MHz over USB 3.0. logicview uses
-//! its 8-channel mode (D0..D7, one byte per sample).
+//! `1a86:5537`): 16 channels, up to 200 MHz over USB 3.0. It samples 8
+//! channels (D0..D7, one byte per sample) or 16 (two bytes, little-endian).
 //!
 //! On Windows the board is bound to the WCH CH375 driver by default and is
 //! reached through `CH375DLL64.DLL`; with WinUSB (firmware 0.2 binds it once
@@ -27,6 +27,8 @@ pub enum Error {
     Disconnected(String),
     #[error("{0} Hz cannot be sampled; choose one of the listed sample rates")]
     UnsupportedSamplerate(u64),
+    #[error("{0} channels cannot be sampled; the board takes 8 or 16")]
+    Channels(usize),
     #[error("threshold {0} V is out of range ({THRESHOLD_MIN}..{THRESHOLD_MAX} V)")]
     Threshold(f64),
     #[error("unexpected reply from the board: {0}")]

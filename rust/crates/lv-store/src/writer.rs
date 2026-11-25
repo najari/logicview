@@ -7,7 +7,10 @@ use rusqlite::{Connection, params};
 
 use crate::schema::{FORMAT, SCHEMA, VERSION, now_rfc3339};
 use crate::summary::{self, Entry, LEVEL_FACTOR};
-use crate::{CHUNK_SAMPLES, CHUNKS_PER_COMMIT, CaptureInfo, Error, NewCapture, Result, Status};
+use crate::{
+    CHUNK_SAMPLES, CHUNKS_PER_COMMIT, CaptureInfo, Error, MAX_CHANNELS, NewCapture, Result, Status,
+    unit_for,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct WriteStats {
@@ -33,7 +36,11 @@ pub struct CaptureWriter {
     path: PathBuf,
     id: i64,
     info: CaptureInfo,
+    /// Bytes per sample.
+    unit: usize,
     pending: Vec<u8>,
+    /// The start of a sample whose other byte has not arrived yet.
+    carry: Vec<u8>,
     chunk_idx: i64,
     total: u64,
     l1: Vec<Entry>,
@@ -61,6 +68,16 @@ fn remove_db_files(path: &Path) -> Result<()> {
 
 impl CaptureWriter {
     pub fn create(path: &Path, cap: &NewCapture, overwrite: bool) -> Result<Self> {
+        if cap.channel_names.is_empty() || cap.channel_names.len() > MAX_CHANNELS {
+            return Err(Error::Format {
+                path: path.to_path_buf(),
+                msg: format!(
+                    "{} channels; a capture holds 1 to {MAX_CHANNELS}",
+                    cap.channel_names.len()
+                ),
+            });
+        }
+        let unit = unit_for(cap.channel_names.len());
         if path.exists() {
             if !overwrite {
                 return Err(Error::Exists(path.to_path_buf()));
@@ -115,7 +132,9 @@ impl CaptureWriter {
                 channel_enabled: vec![true; cap.channel_names.len()],
                 trigger: None,
             },
-            pending: Vec::with_capacity(CHUNK_SAMPLES),
+            unit,
+            pending: Vec::with_capacity(CHUNK_SAMPLES * unit),
+            carry: Vec::new(),
             chunk_idx: 0,
             total: 0,
             l1: Vec::new(),
@@ -150,15 +169,34 @@ impl CaptureWriter {
         Ok(())
     }
 
-    /// Append samples (one byte each).
-    pub fn push(&mut self, mut data: &[u8]) -> Result<()> {
-        self.total += data.len() as u64;
+    /// Bytes per sample (1 for up to 8 channels, 2 for up to 16).
+    pub fn unitsize(&self) -> usize {
+        self.unit
+    }
+
+    /// Append samples, [`unitsize`](Self::unitsize) bytes each
+    /// (little-endian, bit n = channel n). A sample may be split across
+    /// two calls.
+    pub fn push(&mut self, data: &[u8]) -> Result<()> {
+        if self.unit > 1 && (!self.carry.is_empty() || !data.len().is_multiple_of(self.unit)) {
+            let mut buf = std::mem::take(&mut self.carry);
+            buf.extend_from_slice(data);
+            let whole = buf.len() / self.unit * self.unit;
+            self.carry = buf[whole..].to_vec();
+            return self.push_whole(&buf[..whole]);
+        }
+        self.push_whole(data)
+    }
+
+    fn push_whole(&mut self, mut data: &[u8]) -> Result<()> {
+        let chunk_bytes = CHUNK_SAMPLES * self.unit;
+        self.total += (data.len() / self.unit) as u64;
         while !data.is_empty() {
-            let room = CHUNK_SAMPLES - self.pending.len();
+            let room = chunk_bytes - self.pending.len();
             let (now, rest) = data.split_at(room.min(data.len()));
             self.pending.extend_from_slice(now);
             data = rest;
-            if self.pending.len() == CHUNK_SAMPLES {
+            if self.pending.len() == chunk_bytes {
                 self.write_chunk()?;
             }
         }
@@ -180,7 +218,7 @@ impl CaptureWriter {
         } else {
             ("raw", self.pending.clone())
         };
-        let l1 = summary::summarize_raw(&self.pending, LEVEL_FACTOR);
+        let l1 = summary::summarize_raw(&self.pending, LEVEL_FACTOR, self.unit);
         self.stats.compress_time += t.elapsed();
         Ok((codec, blob, l1))
     }
@@ -189,7 +227,7 @@ impl CaptureWriter {
     /// partial version of it).
     fn put_chunk(&mut self, codec: &str, blob: &[u8], l1: &[Entry]) -> Result<()> {
         let first = self.chunk_idx as u64 * CHUNK_SAMPLES as u64;
-        let n = self.pending.len();
+        let n = self.pending.len() / self.unit;
         self.conn
             .prepare_cached(
                 "INSERT OR REPLACE INTO sample_chunk(capture_id, chunk_idx, first_sample, n_samples, codec, data)
@@ -200,7 +238,7 @@ impl CaptureWriter {
             .prepare_cached(
                 "INSERT OR REPLACE INTO summary(capture_id, level, chunk_idx, data) VALUES (?1, 1, ?2, ?3)",
             )?
-            .execute(params![self.id, self.chunk_idx, summary::to_blob(l1)])?;
+            .execute(params![self.id, self.chunk_idx, summary::to_blob(l1, self.unit)])?;
         self.last_flush = Instant::now();
         Ok(())
     }
@@ -255,7 +293,7 @@ impl CaptureWriter {
             level = summary::combine(&level, LEVEL_FACTOR);
             self.conn.execute(
                 "INSERT INTO summary(capture_id, level, chunk_idx, data) VALUES (?1, ?2, 0, ?3)",
-                params![self.id, lv, summary::to_blob(&level)],
+                params![self.id, lv, summary::to_blob(&level, self.unit)],
             )?;
         }
         self.conn.execute(

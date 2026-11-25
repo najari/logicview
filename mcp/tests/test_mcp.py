@@ -365,6 +365,26 @@ def run_u3(c, work, dev):
             n = capture_length(c, work, cid, f'u3-{rate}.sr')
             check(f'U3 capture length = {int(rate * secs)} samples', n == int(rate * secs), n)
             c.call('close_capture', captureId=cid)
+    # 16 channels: two bytes per sample in the .sr file.
+    r, e = c.call('start_capture', deviceId=dev,
+                  logicDeviceConfiguration={'logicChannels': {'digitalChannels': list(range(16))},
+                                            'digitalSampleRate': 200_000_000},
+                  captureConfiguration={'timedCaptureMode': {'durationSeconds': 0.1}})
+    check('U3 16-channel capture at 200 MHz', r is not None, e)
+    if r:
+        cid = r['captureId']
+        c.call('wait_capture', captureId=cid)
+        n = capture_length(c, work, cid, 'u3-16.sr')
+        check('U3 16-channel capture = 20000000 samples of 2 bytes', n == 40_000_000, n)
+        r2, e = c.call('export_raw_data_csv', captureId=cid, directory=os.path.join(work, 'hw16'), analogDownsampleRatio=1,
+                       digitalChannels=[15])
+        check('U3 16-channel CSV has Channel 15', r2 is not None and 'Channel 15' in open(
+            os.path.join(work, 'hw16', 'digital.csv'), encoding='utf-8').readline(), e)
+        c.call('close_capture', captureId=cid)
+    r, e = c.call('start_capture', deviceId=dev,
+                  logicDeviceConfiguration={'logicChannels': {'digitalChannels': [0, 16]},
+                                            'digitalSampleRate': 20_000_000})
+    check('U3 channel 16 refused', e and 'Device channels: 0-15' in e, e)
     r, e = c.call('start_capture', deviceId=dev,
                   logicDeviceConfiguration={'logicChannels': {'digitalChannels': [0]},
                                             'digitalSampleRate': 20_000_000, 'digitalThresholdVolts': 3.3})

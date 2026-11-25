@@ -1019,17 +1019,27 @@ impl Server {
         need(!digital.is_empty(), "INVALID_REQUEST", || {
             "At least 1 digital channel must be enabled".into()
         })?;
+        let max_ch = found.max_channels() as i64;
         let bad: Vec<String> = digital
             .iter()
-            .filter(|&&c| !(0..8).contains(&c))
+            .filter(|&&c| !(0..max_ch).contains(&c))
             .map(|c| c.to_string())
             .collect();
         need(bad.is_empty(), "INVALID_REQUEST", || {
             format!(
-                "Requested digital channels are unavailable: {}. Device channels: 0-7.",
-                bad.join(", ")
+                "Requested digital channels are unavailable: {}. Device channels: 0-{}.",
+                bad.join(", "),
+                max_ch - 1
             )
         })?;
+        // The smallest channel mode that holds every requested channel.
+        let highest = digital.iter().copied().max().unwrap_or(0) as usize;
+        let channels = found
+            .channel_choices()
+            .iter()
+            .copied()
+            .find(|&n| n > highest)
+            .unwrap_or(found.max_channels());
         let threshold = match (
             dev_cfg
                 .get("digitalThresholdVolts")
@@ -1062,7 +1072,7 @@ impl Server {
             "digitalSampleRate must be provided (samples/sec).".into()
         })?;
         let rate_u = rate.round() as u64;
-        let rates = found.samplerates();
+        let rates = found.samplerates(channels);
         need(
             rates.contains(&rate_u) && rate.fract() == 0.0,
             "INVALID_REQUEST",
@@ -1145,6 +1155,7 @@ impl Server {
             .join(format!("capture-{cid}.lvcap"));
         remove_db(&path);
         let mut req = CaptureRequest::new(rate_u, limit, path.clone());
+        req.channel_names = (0..channels).map(|i| format!("D{i}")).collect();
         req.overwrite = true;
         req.trigger = trigger;
         req.threshold_volts = threshold;
@@ -2246,8 +2257,9 @@ fn run_capture(
             trim_capture(&path, keep).map_err(internal)?;
         }
     }
-    let names: Vec<String> = (0..8).map(|i| format!("D{i}")).collect();
-    let flags: Vec<bool> = (0..8).map(|c| enabled.contains(&c)).collect();
+    let n = r.info.num_channels;
+    let names: Vec<String> = (0..n).map(|i| format!("D{i}")).collect();
+    let flags: Vec<bool> = (0..n).map(|c| enabled.contains(&c)).collect();
     lv_store::fold_wal(&path).ok();
     lv_store::update_channels(&path, &names, &flags).map_err(internal)?;
     Ok(())

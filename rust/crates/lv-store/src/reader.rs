@@ -143,8 +143,9 @@ impl CaptureFile {
         Ok(n as u64)
     }
 
-    /// Decompressed samples of one chunk.
+    /// Decompressed samples of one chunk ([`CaptureInfo::unitsize`] bytes each).
     pub fn read_chunk(&self, idx: usize) -> Result<Vec<u8>> {
+        let unit = self.info.unitsize();
         let (codec, n, data): (String, i64, Vec<u8>) = self
             .conn
             .prepare_cached(
@@ -155,7 +156,7 @@ impl CaptureFile {
             })?;
         let out = match codec.as_str() {
             "raw" => data,
-            "zstd" => zstd::bulk::decompress(&data, n as usize)
+            "zstd" => zstd::bulk::decompress(&data, n as usize * unit)
                 .map_err(|e| Error::Corrupt(format!("chunk {idx}: {e}")))?,
             other => {
                 return Err(Error::Corrupt(format!(
@@ -163,9 +164,9 @@ impl CaptureFile {
                 )));
             }
         };
-        if out.len() as i64 != n {
+        if out.len() as i64 != n * unit as i64 {
             return Err(Error::Corrupt(format!(
-                "chunk {idx}: {} samples instead of {n}",
+                "chunk {idx}: {} bytes instead of {n} samples of {unit}",
                 out.len()
             )));
         }
@@ -195,17 +196,19 @@ impl CaptureFile {
         Ok(())
     }
 
-    /// Samples `[start, start + len)`, clipped to the capture.
+    /// Samples `[start, start + len)`, clipped to the capture
+    /// ([`CaptureInfo::unitsize`] bytes each).
     pub fn read_samples(&self, start: u64, len: u64) -> Result<Vec<u8>> {
+        let unit = self.info.unitsize();
         let end = (start + len).min(self.info.num_samples);
-        let mut out = Vec::with_capacity(end.saturating_sub(start) as usize);
+        let mut out = Vec::with_capacity(end.saturating_sub(start) as usize * unit);
         let mut pos = start;
         while pos < end {
             let idx = (pos / CHUNK_SAMPLES as u64) as usize;
             let chunk = self.read_chunk(idx)?;
             let off = (pos % CHUNK_SAMPLES as u64) as usize;
-            let take = ((end - pos) as usize).min(chunk.len() - off);
-            out.extend_from_slice(&chunk[off..off + take]);
+            let take = ((end - pos) as usize).min(chunk.len() / unit - off);
+            out.extend_from_slice(&chunk[off * unit..(off + take) * unit]);
             pos += take as u64;
         }
         Ok(out)
@@ -222,7 +225,7 @@ impl CaptureFile {
         let mut rows = stmt.query(params![self.info.id, from_chunk as i64])?;
         while let Some(r) = rows.next()? {
             let blob: Vec<u8> = r.get(0)?;
-            out.extend(summary::from_blob(&blob));
+            out.extend(summary::from_blob(&blob, self.info.unitsize()));
         }
         Ok(out)
     }
@@ -237,7 +240,7 @@ impl CaptureFile {
         let mut rows = stmt.query(params![self.info.id, level as i64])?;
         while let Some(r) = rows.next()? {
             let blob: Vec<u8> = r.get(0)?;
-            out.extend(summary::from_blob(&blob));
+            out.extend(summary::from_blob(&blob, self.info.unitsize()));
         }
         if out.is_empty() && level > 1 {
             // Still recording: build it from the level below.
@@ -310,10 +313,10 @@ mod tests {
             data[mid as usize..mid as usize + 300]
         );
         // Summaries match a direct computation.
-        assert_eq!(f.summary(1).unwrap(), summarize_raw(&data, 64));
-        assert_eq!(f.summary(2).unwrap(), summarize_raw(&data, 4096));
+        assert_eq!(f.summary(1).unwrap(), summarize_raw(&data, 64, 1));
+        assert_eq!(f.summary(2).unwrap(), summarize_raw(&data, 4096, 1));
         let l3 = f.summary(3).unwrap();
-        assert_eq!(l3, summarize_raw(&data, 262_144));
+        assert_eq!(l3, summarize_raw(&data, 262_144, 1));
         assert_eq!(channel_state(l3[0], 0), ChannelState::Changing);
     }
 
@@ -413,6 +416,47 @@ mod tests {
         assert_eq!(g.read_samples(0, data.len() as u64).unwrap(), data);
         assert_eq!(g.info.channel_names, names);
         assert_eq!(g.info.channel_enabled, enabled);
+    }
+
+    #[test]
+    fn ch16_write_then_read_back() {
+        let path = temp("ch16.lvcap");
+        let cap = NewCapture {
+            device: "test".into(),
+            samplerate_hz: 200_000_000,
+            channel_names: (0..16).map(|i| format!("D{i}")).collect(),
+        };
+        let n = CHUNK_SAMPLES + 4_321;
+        let data: Vec<u8> = (0..n as u32)
+            .flat_map(|i| ((i >> 3) as u16 ^ 0x8000).to_le_bytes())
+            .collect();
+        let mut w = CaptureWriter::create(&path, &cap, true).unwrap();
+        assert_eq!(w.unitsize(), 2);
+        // Odd push sizes split samples between calls.
+        for part in data.chunks(100_001) {
+            w.push(part).unwrap();
+        }
+        let (info, _) = w.finish(Status::Complete).unwrap();
+        assert_eq!(info.num_samples, n as u64);
+        let f = CaptureFile::open(&path).unwrap();
+        assert_eq!(f.info.unitsize(), 2);
+        assert_eq!(f.info.num_channels, 16);
+        assert_eq!(f.read_samples(0, n as u64).unwrap(), data);
+        let mid = CHUNK_SAMPLES as u64 - 10;
+        assert_eq!(
+            f.read_samples(mid, 20).unwrap(),
+            data[mid as usize * 2..(mid as usize + 20) * 2]
+        );
+        assert_eq!(f.summary(1).unwrap(), summarize_raw(&data, 64, 2));
+        let l3 = f.summary(3).unwrap();
+        assert_eq!(l3, summarize_raw(&data, 262_144, 2));
+        assert_eq!(channel_state(l3[0], 15), ChannelState::High);
+        assert_eq!(channel_state(l3[0], 5), ChannelState::Changing);
+        let too_many = NewCapture {
+            channel_names: (0..17).map(|i| format!("D{i}")).collect(),
+            ..cap
+        };
+        assert!(CaptureWriter::create(&temp("ch17.lvcap"), &too_many, true).is_err());
     }
 
     #[test]

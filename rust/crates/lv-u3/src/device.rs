@@ -103,6 +103,8 @@ pub struct U3 {
     pub fw_version: (u8, u8),
     /// bcdUSB of the link: 0x0300 for USB 3.0.
     pub bcd_usb: u16,
+    /// Channels sampled: 8 or 16 (see [`U3::set_channels`]).
+    pub channels: u8,
 }
 
 impl std::fmt::Debug for U3 {
@@ -112,6 +114,7 @@ impl std::fmt::Debug for U3 {
             .field("via", &self.via)
             .field("fw_version", &self.fw_version)
             .field("bcd_usb", &format_args!("{:04x}", self.bcd_usb))
+            .field("channels", &self.channels)
             .finish()
     }
 }
@@ -134,6 +137,7 @@ pub fn open(found: &FoundU3) -> Result<U3, Error> {
         via: found.via,
         fw_version: (0, 0),
         bcd_usb,
+        channels: 16,
     };
     dev.link.flush_replies();
     let v = dev.command(CMD_GET_VERSION, &[])?;
@@ -159,9 +163,22 @@ pub fn reuse(cached: Option<U3>, found: &FoundU3) -> Option<U3> {
 }
 
 impl U3 {
-    /// Sample rates of the link the board is on, fastest first.
+    /// Sample rates of the link the board is on with the current channel
+    /// mode, fastest first.
     pub fn samplerates(&self) -> &'static [u64] {
-        rates_for(self.bcd_usb)
+        rates_for(self.bcd_usb, self.channels)
+    }
+
+    /// Sample `n` channels: up to 8 takes the 8-channel mode (one byte per
+    /// sample), up to 16 the 16-channel mode (two bytes).
+    pub fn set_channels(&mut self, n: usize) -> Result<(), Error> {
+        self.channels = channel_mode(n).ok_or(Error::Channels(n))?;
+        Ok(())
+    }
+
+    /// Bytes per sample in the current mode.
+    pub fn unitsize(&self) -> usize {
+        if self.channels > 8 { 2 } else { 1 }
     }
 
     pub fn is_usb3(&self) -> bool {
@@ -201,8 +218,10 @@ impl U3 {
         })
     }
 
-    /// Stream 8-channel samples (one byte per sample, bit n = D<n>) into
-    /// `sink`, like [`lv_fx2lafw::Fx2lafw::stream`].
+    /// Stream samples into `sink`, like [`lv_fx2lafw::Fx2lafw::stream`]:
+    /// one byte per sample in 8-channel mode, two (little-endian) in
+    /// 16-channel mode, bit n = D<n>. The sink only gets whole samples, and
+    /// `limit_samples` counts samples.
     pub fn stream(
         &mut self,
         cfg: &StreamConfig,
@@ -210,13 +229,19 @@ impl U3 {
         mut sink: impl FnMut(&[u8]) -> bool,
     ) -> Result<StreamStats, Error> {
         let div = divider(self.samplerates(), cfg.samplerate)?;
+        let unit = self.unitsize();
+        let width = if unit == 2 {
+            SAMPLE_WIDTH_16BIT
+        } else {
+            SAMPLE_WIDTH_8BIT
+        };
         let block = cfg
             .transfer_size
-            .unwrap_or_else(|| transfer_size(cfg.samplerate));
+            .unwrap_or_else(|| transfer_size(cfg.samplerate, unit));
         self.link.flush_replies();
         // Make sure the board is idle; it does not answer a stop.
         self.send(CMD_STOP_LOGIC)?;
-        self.command(CMD_SET_LOGIC_PARAMS, &[SAMPLE_WIDTH_8BIT, div, 0])?;
+        self.command(CMD_SET_LOGIC_PARAMS, &[width, div, 0])?;
         self.link.start_upload(block)?;
         if let Err(e) = self.send(CMD_START_LOGIC) {
             self.link.stop_upload();
@@ -225,7 +250,8 @@ impl U3 {
 
         let started = Instant::now();
         // The board stops sending when the link cannot keep up.
-        let block_time = Duration::from_secs_f64(block as f64 / cfg.samplerate.max(1) as f64);
+        let block_time =
+            Duration::from_secs_f64(block as f64 / unit as f64 / cfg.samplerate.max(1) as f64);
         let idle_limit = (block_time * 4).max(Duration::from_millis(1000));
         let mut last_data = started;
         let mut stats = StreamStats {
@@ -239,6 +265,9 @@ impl U3 {
             first_data: None,
         };
         let mut failure = None;
+        // A sample split between two reads, and room to join it.
+        let mut carry: Option<u8> = None;
+        let mut joined: Vec<u8> = Vec::new();
         let end = loop {
             if stop.load(Ordering::Relaxed) {
                 break StreamEnd::Stopped;
@@ -264,14 +293,26 @@ impl U3 {
             }
             last_data = Instant::now();
             stats.first_data.get_or_insert_with(|| started.elapsed());
-            let take = match cfg.limit_samples {
-                Some(limit) => (limit - stats.samples).min(data.len() as u64) as usize,
-                None => data.len(),
+            let data = if unit == 2 && (carry.is_some() || data.len() % 2 == 1) {
+                joined.clear();
+                joined.extend(carry.take());
+                joined.extend_from_slice(data);
+                if joined.len() % 2 == 1 {
+                    carry = joined.pop();
+                }
+                &joined[..]
+            } else {
+                data
             };
-            if !sink(&data[..take]) {
+            let n = (data.len() / unit) as u64;
+            let take = match cfg.limit_samples {
+                Some(limit) => (limit - stats.samples).min(n),
+                None => n,
+            };
+            if !sink(&data[..take as usize * unit]) {
                 break StreamEnd::SinkFull;
             }
-            stats.samples += take as u64;
+            stats.samples += take;
             if cfg.limit_samples.is_some_and(|l| stats.samples >= l) {
                 break StreamEnd::LimitReached;
             }

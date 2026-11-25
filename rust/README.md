@@ -658,6 +658,22 @@ FX2는 없었다. 입력에 신호를 걸지 않았다.
 | `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
 | `scripts\package.ps1` → `scripts\test-package.ps1 -Hardware` | 958개 파일, zip 22.4 MB. 7개 모두 통과 |
 
+같은 날 `69d1ae2`(README만 바뀜)에서 한 번 더 돌렸다 (U3만 연결, 신호 없음).
+
+| 시험 | 결과 |
+| --- | --- |
+| build, fmt, clippy, `cargo test --release --workspace` | 경고 없음, 67개 모두 통과 |
+| `lvcli bench -r 200M -s 400M -n 3` 16채널 / `--channels 8` (따로 돌림) | **3/3** (실효 199.77~199.80 MHz, 마무리 64~70 ms) / **3/3** (199.50~199.60 MHz) |
+| `lvcli bench -r 20M -s 20M -n 2` / `-r 4M -s 4M -n 2` | 2/2 / 2/2 |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버) / 같은 시험 (Python 서버, 하드웨어 없이) | 67개 / 52개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
+| `scripts\package.ps1` → `scripts\test-package.ps1 -Hardware` | 958개 파일, zip 22.4 MB. 7개 모두 통과 |
+
+처음에는 bench를 MCP 시험·패키지 시험(둘 다 같은 보드에서 수집)과 동시에 돌려 8채널 3회 중 1회가 실패하고,
+마무리가 2.4~5.8 s로 늘었다. 따로 돌리자 모두 통과했다. CH375 드라이버는 FX2의 WinUSB와 달리 두 프로그램이
+같은 보드를 함께 열게 둔다. 그래서 한쪽이 수집하는 중에 다른 쪽이 수집을 시작하면, 열기 오류 없이 수집이
+깨진다. WeAct 프로그램과 logicview가 동시에 수집해도 마찬가지일 것이다.
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

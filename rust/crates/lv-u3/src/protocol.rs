@@ -27,6 +27,11 @@ pub const CMD_STOP_LOGIC: u8 = 0xa3;
 pub const CMD_GET_LOGIC_PARAMS: u8 = 0xa4;
 pub const CMD_GET_LOGIC_LEVEL: u8 = 0xa5;
 pub const CMD_GET_VERSION: u8 = 0xac;
+pub const CMD_ENTER_IAP: u8 = 0xae;
+pub const CMD_SET_LED_BRIGHT: u8 = 0xaf;
+
+/// Indicator brightness levels the firmware takes, percent of full.
+pub const LED_LEVELS: &[u8] = &[10, 20, 40, 70, 100];
 
 /// Sample width codes: 8 channels (D0..D7, one byte) or 16 channels
 /// (D0..D15, two bytes little-endian). Bit n = channel n.

@@ -121,6 +121,23 @@ enum Cmd {
         #[arg(long)]
         overwrite: bool,
     },
+    /// WeAct U3 펌웨어 업데이트. --yes가 없으면 파일만 확인하고 할 일을 보여 줌
+    FwUpdate {
+        /// 펌웨어 (.bin 또는 .hex)
+        file: PathBuf,
+        /// .bin을 쓸 슬롯: 0 로직 애널라이저, 1 USB-시리얼+DAP, 2 사용자 앱
+        #[arg(long, default_value_t = 0)]
+        slot: usize,
+        /// 보드 위치 (예: usb/1-14). 없으면 첫 U3
+        #[arg(short, long)]
+        device: Option<String>,
+        /// 보드가 이미 업데이트 모드(1a86:fe17)에 있음
+        #[arg(long)]
+        in_bootloader: bool,
+        /// 정말 씀
+        #[arg(long)]
+        yes: bool,
+    },
     /// 저장 속도 측정: 압축이 안 되는 무작위 데이터와 0만 있는 데이터
     StoreBench {
         #[arg(short, long, default_value = "50M")]
@@ -239,6 +256,13 @@ fn run(cli: Cli) -> Result<()> {
             label,
             quiet,
         } => decode::run(&file, &protocol, annotations.as_deref(), save, label, quiet),
+        Cmd::FwUpdate {
+            file,
+            slot,
+            device,
+            in_bootloader,
+            yes,
+        } => fw_update(&file, slot, device.as_deref(), in_bootloader, yes),
         Cmd::StoreBench { samples, output } => synth::store_bench(parse_si(&samples)?, &output),
         Cmd::Synth {
             samples,
@@ -417,6 +441,57 @@ fn capture(
     if !report.outcome.is_ok() {
         bail!("{}", report.outcome.describe());
     }
+    Ok(())
+}
+
+fn fw_update(
+    file: &Path,
+    slot: usize,
+    location: Option<&str>,
+    in_bootloader: bool,
+    yes: bool,
+) -> Result<()> {
+    use lv_device::iap;
+    let image = iap::load_image(file, slot)?;
+    let slot = image.slot().context("slot")?;
+    println!(
+        "{}: {} 바이트 -> 0x{:08x} ({})",
+        file.display(),
+        image.data.len(),
+        image.addr,
+        iap::SLOTS[slot].1
+    );
+    let found = if in_bootloader {
+        None
+    } else {
+        let list = lv_device::list_devices()?;
+        let f = list
+            .into_iter()
+            .filter(|d| d.is_u3())
+            .find(|d| location.is_none_or(|l| d.location() == l))
+            .context("WeAct U3가 없습니다 (업데이트 모드의 보드라면 --in-bootloader)")?;
+        println!(
+            "보드: {} {} (일련번호 {})",
+            f.location(),
+            f.name(),
+            f.serial().unwrap_or("-")
+        );
+        Some(f)
+    };
+    if !yes {
+        println!("확인만 했습니다. 쓰려면 --yes를 붙이세요.");
+        return Ok(());
+    }
+    let serial = found.as_ref().and_then(|f| f.serial().map(String::from));
+    if let Some(f) = &found {
+        let mut dev = lv_device::open(f)?;
+        eprintln!("업데이트 모드로 바꾸는 중…");
+        dev.enter_update_mode()?;
+    }
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    iap::upgrade(&image, serial.as_deref(), &cancel, |p| {
+        eprintln!("{:>3}%  {}", p.percent, p.text)
+    })?;
     Ok(())
 }
 

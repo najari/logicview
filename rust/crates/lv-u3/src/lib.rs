@@ -7,6 +7,7 @@
 //! the CH375 driver is removed), and on Linux and macOS, through nusb.
 
 mod device;
+pub mod iap;
 mod link;
 pub mod protocol;
 
@@ -33,4 +34,6 @@ pub enum Error {
     Threshold(f64),
     #[error("unexpected reply from the board: {0}")]
     Protocol(String),
+    #[error("펌웨어 업데이트: {0}")]
+    Iap(String),
 }

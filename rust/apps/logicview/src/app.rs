@@ -1,9 +1,13 @@
 //! The main window (M2): capture from the device, open and save files, zoom
 //! and pan the waveform, two markers, channel names and visibility.
 
+mod device_ui;
+mod fw_ui;
+mod settings_ui;
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
@@ -16,7 +20,7 @@ use crate::acquire::{self, DeviceSlot, Msg, Session};
 use crate::bench::Bench;
 use crate::capture_view::CaptureView;
 use crate::decode_ui::{self, Analyzer, DecodeUi, TableAction, TableUi};
-use crate::settings::{AppDb, Remembered};
+use crate::settings::{AppDb, Remembered, ViewSettings};
 use crate::wave::{self, Row, View, WaveStats};
 
 /// Channel colours in resistor colour-code order, as sigrok tools use.
@@ -57,7 +61,6 @@ const LIVE_REFRESH: Duration = Duration::from_millis(100);
 /// Redraw interval while capturing (at most 30 times a second).
 const LIVE_REPAINT: Duration = Duration::from_millis(33);
 /// A marker snaps to an edge closer than this.
-const SNAP_PX: f64 = 8.0;
 const DEVICE_SCAN: Duration = Duration::from_secs(2);
 
 pub struct App {
@@ -92,8 +95,26 @@ pub struct App {
     pre_percent: u8,
     /// Signal level in volts, for devices with a threshold (WeAct U3).
     level: f64,
-    /// Channels to capture on devices that offer a choice (WeAct U3: 8 or 16).
+    /// Channels to capture on devices that offer a choice (WeAct U3: 2, 4, 8, 16).
     channels: usize,
+    /// Start and stop captures with the board key (WeAct U3).
+    key_capture: bool,
+    /// Indicator brightness, percent (WeAct U3).
+    led: u8,
+    show_device: bool,
+    device_msg: Option<String>,
+    show_settings: bool,
+    settings_tab: usize,
+    fw: fw_ui::FwUpdate,
+    /// Settings window values, and what was last saved.
+    view_opts: ViewSettings,
+    saved_view: ViewSettings,
+    log_msg: Option<String>,
+    key_watch: Option<device_ui::KeyWatch>,
+    /// Taken while a capture or the key watcher gets the device.
+    usb_lock: Arc<Mutex<()>>,
+    dev_tx: std::sync::mpsc::Sender<device_ui::DevEvent>,
+    dev_rx: std::sync::mpsc::Receiver<device_ui::DevEvent>,
     session: Option<Session>,
     last_refresh: Instant,
     /// Keep the whole capture in view while recording, until the user zooms.
@@ -176,7 +197,7 @@ impl App {
     ) -> Self {
         let (mcp_cfg, mcp_host, mcp_port) = mcp;
         setup_fonts(&cc.egui_ctx);
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        let (dev_tx, dev_rx) = device_ui::channel();
         let mut app = Self {
             capture: None,
             view: View {
@@ -203,6 +224,20 @@ impl App {
             pre_percent: 10,
             level: 3.3,
             channels: MAX_CHANNELS,
+            key_capture: false,
+            led: 20,
+            show_device: false,
+            device_msg: None,
+            show_settings: false,
+            settings_tab: 0,
+            fw: fw_ui::FwUpdate::default(),
+            view_opts: ViewSettings::default(),
+            saved_view: ViewSettings::default(),
+            log_msg: None,
+            key_watch: None,
+            usb_lock: Arc::new(Mutex::new(())),
+            dev_tx,
+            dev_rx,
             session: None,
             last_refresh: Instant::now(),
             follow: false,
@@ -227,10 +262,18 @@ impl App {
                 pre_percent: 0,
                 level: 0.0,
                 channels: 0,
+                key_capture: false,
+                led: 0,
             },
         };
         // MCP captures and the toolbar share one opened device.
         app.mcp_cfg.device_slot = app.slot.clone();
+        // Decoder folders set in the decoder window, before the runtime starts.
+        crate::settings::DecoderPaths::load(&app.db).apply();
+        app.view_opts = ViewSettings::load(&app.db);
+        app.saved_view = app.view_opts.clone();
+        settings_ui::apply_theme(&cc.egui_ctx, app.view_opts.theme);
+        settings_ui::apply_log(&app.view_opts);
         // UI-10: the last settings, then the command line on top.
         let last = Remembered::load(&app.db, app.remembered());
         app.apply(&last);
@@ -275,6 +318,8 @@ impl App {
             pre_percent: self.pre_percent,
             level: self.level,
             channels: self.channels,
+            key_capture: self.key_capture,
+            led: self.led,
         }
     }
 
@@ -287,6 +332,8 @@ impl App {
         self.pre_percent = r.pre_percent;
         self.level = r.level;
         self.channels = r.channels;
+        self.key_capture = r.key_capture;
+        self.led = r.led;
     }
 
     /// Write changed settings, once no text field is being edited (and on
@@ -575,9 +622,16 @@ impl App {
         req.threshold_volts = found
             .threshold_range()
             .map(|_| lv_device::threshold_for_level(self.level));
+        req.key_stop = found.is_u3() && self.key_capture;
         self.message = None;
         self.error = None;
-        self.session = Some(acquire::start(found, req, self.slot.clone(), ctx.clone()));
+        self.session = Some(acquire::start(
+            found,
+            req,
+            self.slot.clone(),
+            self.usb_lock.clone(),
+            ctx.clone(),
+        ));
     }
 
     /// Handle messages from the capture thread and keep the live view fresh.
@@ -603,7 +657,7 @@ impl App {
             match CaptureView::open(&path) {
                 Ok(cv) => {
                     self.set_capture(cv);
-                    self.follow = true;
+                    self.follow = self.view_opts.follow_live;
                 }
                 Err(e) => self.error = Some(format!("수집 중인 파일을 열 수 없습니다: {e}")),
             }
@@ -676,8 +730,16 @@ impl App {
         {
             log::warn!("saving channel visibility: {e}");
         }
+        let keep_view = (!self.view_opts.fit_on_stop).then_some(self.view);
         match CaptureView::open(path) {
-            Ok(cv) => self.set_capture(cv),
+            Ok(cv) => {
+                self.set_capture(cv);
+                if let Some(v) = keep_view {
+                    self.view = v;
+                    self.fit_pending = false;
+                    self.clamp_view();
+                }
+            }
             Err(e) => self.error = Some(format!("{}을(를) 열 수 없습니다: {e}", path.display())),
         }
         let secs = r.stream.elapsed.as_secs_f64();
@@ -828,6 +890,7 @@ impl App {
                 if ui.button("다시 찾기").clicked() {
                     self.scan_devices(ui.ctx());
                 }
+                self.device_options_button(ui);
                 ui.separator();
                 ui.label("샘플레이트");
                 egui::ComboBox::from_id_salt("rate")
@@ -838,51 +901,6 @@ impl App {
                             ui.selectable_value(&mut self.rate, r, fmt_rate(r));
                         }
                     });
-                let choices = self
-                    .devices
-                    .get(self.dev_sel)
-                    .map(Found::channel_choices)
-                    .unwrap_or(&[]);
-                if choices.len() > 1 {
-                    let before = self.channels;
-                    if !choices.contains(&self.channels) {
-                        self.channels = choices[choices.len() - 1];
-                    }
-                    ui.label("채널");
-                    egui::ComboBox::from_id_salt("channels")
-                        .selected_text(self.channels.to_string())
-                        .width(40.0)
-                        .show_ui(ui, |ui| {
-                            for &n in choices {
-                                ui.selectable_value(&mut self.channels, n, n.to_string());
-                            }
-                        })
-                        .response
-                        .on_hover_text(format!("D0~D{}을 수집", self.channels - 1));
-                    if self.channels != before {
-                        self.fit_rate();
-                    }
-                }
-                if self
-                    .devices
-                    .get(self.dev_sel)
-                    .is_some_and(|d| d.threshold_range().is_some())
-                {
-                    ui.label("레벨");
-                    egui::ComboBox::from_id_salt("level")
-                        .selected_text(format!("{} V", self.level))
-                        .width(60.0)
-                        .show_ui(ui, |ui| {
-                            for &l in lv_device::LEVELS {
-                                ui.selectable_value(&mut self.level, l, format!("{l} V"));
-                            }
-                        })
-                        .response
-                        .on_hover_text(format!(
-                            "신호의 High 전압. 입력 문턱 {:.2} V",
-                            lv_device::threshold_for_level(self.level)
-                        ));
-                }
                 ui.label("시간");
                 egui::ComboBox::from_id_salt("duration")
                     .selected_text(fmt_duration(self.duration))
@@ -971,6 +989,7 @@ impl App {
             }
             ui.separator();
             ui.toggle_value(&mut self.show_channels, "채널…");
+            ui.toggle_value(&mut self.show_settings, "설정…");
             ui.toggle_value(&mut self.decode.open, "디코더…");
             ui.add_enabled_ui(self.capture.is_some(), |ui| {
                 ui.toggle_value(&mut self.table.show, "표");
@@ -1156,19 +1175,29 @@ impl App {
         let nch = info.num_channels.clamp(1, MAX_CHANNELS);
         let chans: Vec<usize> = (0..nch).filter(|&c| self.shown[c]).collect();
         let ann_h: f32 = self.analyzers.iter().map(Analyzer::height).sum();
-        let row_h = ((plot.height() - ann_h) / chans.len().max(1) as f32).clamp(24.0, 96.0);
+        let row_h = if self.view_opts.row_height > 0.0 {
+            self.view_opts.row_height
+        } else {
+            ((plot.height() - ann_h) / chans.len().max(1) as f32).clamp(24.0, 96.0)
+        };
         let view = self.view;
         let x_of = |s: f64| plot.left() + ((s - view.start) / view.spp) as f32;
+        let trigger_at = info.trigger.as_deref().and_then(trigger_sample);
+        // Times shown count from here (the trigger, if the setting says so).
+        let t_off = match (self.view_opts.zero_at_trigger, trigger_at) {
+            (true, Some(ts)) => ts as f64 / rate,
+            _ => 0.0,
+        };
 
         // Time ruler and grid.
         let step = wave::nice_step(120.0 * view.spp / rate);
-        let t0 = view.start / rate;
-        let t1 = (view.start + plot.width() as f64 * view.spp) / rate;
+        let t0 = view.start / rate - t_off;
+        let t1 = (view.start + plot.width() as f64 * view.spp) / rate - t_off;
         let grid = ui.visuals().widgets.noninteractive.bg_stroke.color;
         let text = ui.visuals().text_color();
         let mut t = (t0 / step).ceil() * step;
         while t <= t1 {
-            let x = x_of(t * rate);
+            let x = x_of((t + t_off) * rate);
             painter.line_segment(
                 [pos2(x, full.top() + RULER_H - 6.0), pos2(x, plot.bottom())],
                 Stroke::new(1.0, grid),
@@ -1223,7 +1252,14 @@ impl App {
         }
 
         let t_build = Instant::now();
-        match wave::build(cv, plot, &rows, view) {
+        let opts = wave::WaveOpts {
+            fill_high: self.view_opts.fill_high.then(|| {
+                let [r, g, b, a] = self.view_opts.fill_color;
+                Color32::from_rgba_unmultiplied(r, g, b, a)
+            }),
+            sample_dots: self.view_opts.sample_dots,
+        };
+        match wave::build(cv, plot, &rows, view, opts) {
             Ok((mesh, stats)) => {
                 self.last_stats = stats;
                 painter.with_clip_rect(plot).add(Shape::mesh(mesh));
@@ -1273,7 +1309,7 @@ impl App {
             let row = ((pos.y - plot.top()) / row_h) as usize;
             let s = chans
                 .get(row)
-                .and_then(|&ch| snap_to_edge(cv, ch, s, SNAP_PX * view.spp))
+                .and_then(|&ch| snap_to_edge(cv, ch, s, self.view_opts.snap_px as f64 * view.spp))
                 .unwrap_or_else(|| s.round().max(0.0));
             let slot = match self.markers {
                 [None, _] => 0,
@@ -1285,7 +1321,6 @@ impl App {
         if resp.secondary_clicked() {
             self.markers = [None; 2];
         }
-        let trigger_at = info.trigger.as_deref().and_then(trigger_sample);
         if let Some(ts) = trigger_at {
             let x = x_of(ts as f64);
             if (plot.left()..=plot.right()).contains(&x) {
@@ -1336,10 +1371,12 @@ impl App {
         // Readout: cursor, then markers.
         let mut parts = Vec::new();
         if let Some(pos) = cursor {
-            painter.line_segment(
-                [pos2(pos.x, plot.top()), pos2(pos.x, plot.bottom())],
-                Stroke::new(1.0, Color32::from_white_alpha(90)),
-            );
+            if self.view_opts.cursor_line {
+                painter.line_segment(
+                    [pos2(pos.x, plot.top()), pos2(pos.x, plot.bottom())],
+                    Stroke::new(1.0, Color32::from_white_alpha(90)),
+                );
+            }
             let s = view.sample_at(pos.x - plot.left());
             let k = s.floor().max(0.0) as u64;
             let vals = cv
@@ -1355,7 +1392,7 @@ impl App {
                 .unwrap_or_default();
             parts.push(format!(
                 "커서 {}  ·  샘플 {}  ·  D0..D{} = {}",
-                wave::fmt_time(s / rate, step / 100.0),
+                wave::fmt_time(s / rate - t_off, step / 100.0),
                 fmt_count(k),
                 nch - 1,
                 vals
@@ -1367,7 +1404,7 @@ impl App {
                 parts.push(format!(
                     "{} {}",
                     ["A", "B"][i],
-                    trim_time(&wave::fmt_time(m / rate, tick))
+                    trim_time(&wave::fmt_time(m / rate - t_off, tick))
                 ));
             }
         }
@@ -1461,6 +1498,7 @@ impl eframe::App for App {
         }
         self.poll_scan();
         self.poll_session(&ctx);
+        self.poll_device(&ctx);
         let cpu_prev_ms = frame
             .info()
             .cpu_usage
@@ -1514,6 +1552,9 @@ impl eframe::App for App {
             self.cursor_text = self.waveform(ui);
         });
         self.channels_window(&ctx);
+        self.device_window(&ctx);
+        self.settings_window(&ctx);
+        self.fw_window(&ctx);
         let recording = self.session.is_some();
         let file = self.capture.as_ref().map(|c| {
             let n = c.info().num_channels.clamp(1, MAX_CHANNELS);

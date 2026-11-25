@@ -32,6 +32,18 @@ pub struct Row {
     pub color: Color32,
 }
 
+/// Drawing options from the settings window.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WaveOpts {
+    /// Fill the area under high levels with this color.
+    pub fill_high: Option<Color32>,
+    /// Mark every sample when zoomed in far enough.
+    pub sample_dots: bool,
+}
+
+/// Points between samples needed before they get dots.
+const DOT_SPACING: f64 = 6.0;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WaveStats {
     /// Summary level used; 0 = raw samples.
@@ -92,6 +104,7 @@ pub fn build(
     plot: Rect,
     rows: &[Row],
     view: View,
+    opts: WaveOpts,
 ) -> lv_store::Result<(Mesh, WaveStats)> {
     let mut p = Painter {
         mesh: Mesh::default(),
@@ -125,6 +138,9 @@ pub fn build(
                 if nv != v {
                     let k = a + i as u64;
                     let x = x_of(k);
+                    if let (true, Some(f)) = (v, opts.fill_high) {
+                        p.rect(x_of(run_start), row.hi, x, row.lo, f);
+                    }
                     p.hline(
                         x_of(run_start),
                         x,
@@ -136,12 +152,23 @@ pub fn build(
                     v = nv;
                 }
             }
+            if let (true, Some(f)) = (v, opts.fill_high) {
+                p.rect(x_of(run_start), row.hi, x_of(b), row.lo, f);
+            }
             p.hline(
                 x_of(run_start),
                 x_of(b),
                 if v { row.hi } else { row.lo },
                 row.color,
             );
+            if opts.sample_dots && 1.0 / view.spp >= DOT_SPACING {
+                let bit = 1u16 << row.channel;
+                for (i, &s) in raw.iter().enumerate() {
+                    let x = x_of(a + i as u64);
+                    let y = if s & bit != 0 { row.hi } else { row.lo };
+                    p.rect(x - 1.5, y - 1.5, x + 1.5, y + 1.5, Color32::WHITE);
+                }
+            }
         }
         stats.quads = p.quads;
         return Ok((p.mesh, stats));
@@ -208,7 +235,12 @@ pub fn build(
             let (x0, x1) = (x_at(run_start), x_at(c).min(plot.right()));
             match run {
                 St::Low => p.hline(x0, x1, row.lo, row.color),
-                St::High => p.hline(x0, x1, row.hi, row.color),
+                St::High => {
+                    if let Some(f) = opts.fill_high {
+                        p.rect(x0, row.hi, x1, row.lo, f);
+                    }
+                    p.hline(x0, x1, row.hi, row.color)
+                }
                 St::Changing => {
                     p.rect(x0, row.hi, x1, row.lo, fill);
                     p.hline(x0, x1, row.hi, row.color);

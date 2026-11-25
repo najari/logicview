@@ -105,6 +105,8 @@ pub struct U3 {
     pub bcd_usb: u16,
     /// Channels sampled: 8 or 16 (see [`U3::set_channels`]).
     pub channels: u8,
+    /// A press of the board key ends the capture (firmware 0.2).
+    pub key_stop: bool,
 }
 
 impl std::fmt::Debug for U3 {
@@ -138,6 +140,7 @@ pub fn open(found: &FoundU3) -> Result<U3, Error> {
         fw_version: (0, 0),
         bcd_usb,
         channels: 16,
+        key_stop: false,
     };
     dev.link.flush_replies();
     let v = dev.command(CMD_GET_VERSION, &[])?;
@@ -183,6 +186,45 @@ impl U3 {
 
     pub fn is_usb3(&self) -> bool {
         self.bcd_usb >= 0x0300
+    }
+
+    /// Firmware 0.2 and later have the board key and the indicator level.
+    pub fn has_key_and_led(&self) -> bool {
+        self.fw_version.0 >= 2
+    }
+
+    /// How often the board key was pressed (a wrapping counter), if the
+    /// firmware reports it.
+    pub fn key_count(&mut self) -> Result<Option<u8>, Error> {
+        let d = self.command(CMD_GET_LOGIC_PARAMS, &[])?;
+        Ok(d.get(2).copied())
+    }
+
+    /// Set the indicator brightness (one of [`LED_LEVELS`], percent).
+    pub fn set_led_brightness(&mut self, level: u8) -> Result<(), Error> {
+        if !self.has_key_and_led() {
+            return Err(Error::Protocol(format!(
+                "firmware 0.{} has no indicator brightness (0.2 or later)",
+                self.fw_version.0
+            )));
+        }
+        self.link
+            .write(&command(CMD_SET_LED_BRIGHT, &[level.min(100)]))?;
+        let r = self.link.read_reply(REPLY_TIMEOUT)?;
+        // Firmware 0.2 answers 0xFA instead of the 0xBF the vendor driver
+        // expects (seen 2026-11-25); the status byte is what counts.
+        let mut r = r;
+        if r.first() == Some(&0xfa) {
+            r[0] = CMD_SET_LED_BRIGHT | 0x10;
+        }
+        reply_data(CMD_SET_LED_BRIGHT, &r)?;
+        Ok(())
+    }
+
+    /// Restart the board in its update (IAP) mode; it comes back as the HID
+    /// device `1a86:fe17`. The board does not answer.
+    pub fn enter_iap(&mut self) -> Result<(), Error> {
+        self.send(CMD_ENTER_IAP)
     }
 
     fn command(&mut self, cmd: u8, data: &[u8]) -> Result<Vec<u8>, Error> {
@@ -241,7 +283,14 @@ impl U3 {
         self.link.flush_replies();
         // Make sure the board is idle; it does not answer a stop.
         self.send(CMD_STOP_LOGIC)?;
-        self.command(CMD_SET_LOGIC_PARAMS, &[width, div, 0])?;
+        let key_stop = self.key_stop && self.has_key_and_led();
+        // The count before the start tells a key press from a stalled link.
+        let key_before = if key_stop {
+            self.key_count().ok().flatten()
+        } else {
+            None
+        };
+        self.command(CMD_SET_LOGIC_PARAMS, &[width, div, u8::from(key_stop)])?;
         self.link.start_upload(block)?;
         if let Err(e) = self.send(CMD_START_LOGIC) {
             self.link.stop_upload();
@@ -321,6 +370,14 @@ impl U3 {
         let _ = self.send(CMD_STOP_LOGIC);
         self.link.stop_upload();
         let mut end = end;
+        if end == StreamEnd::DeviceStopped
+            && key_before.is_some()
+            && self.key_count().ok().flatten() != key_before
+        {
+            log::info!("{}: stopped by the board key", self.location);
+            end = StreamEnd::Stopped;
+            failure = None;
+        }
         if end == StreamEnd::DeviceStopped && !self.is_alive() {
             log::info!(
                 "{}: no data, and the board no longer answers",

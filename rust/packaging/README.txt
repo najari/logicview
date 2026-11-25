@@ -26,7 +26,10 @@ WeAct Logic Analyzer V2는 드라이버를 바꾸지 않아도 된다. WeAct 프
 logicview.exe 를 실행한다.
 
 - 위 줄: 장치, 샘플레이트(고른 장치의 것), 시간(0.1~60초 또는 수동 중지), 트리거(예: 0=f,1=1), 시작/중지.
-  WeAct U3를 고르면 "채널"(8 또는 16)과 "레벨"(신호의 High 전압 1.0~3.3 V)이 나온다.
+  "장치 옵션…"에서 채널 모드(WeAct U3: 2/4/8/16), 입력 레벨(신호의 High 전압 1.0~3.3 V), 앞 구간,
+  보드 버튼으로 수집, 표시등 밝기, 보일 채널을 정하고, U3의 펌웨어를 업데이트한다.
+- "설정…": 테마, 파형 보기(트리거를 시간 0으로, 샘플 점, High 채우기 등), 디코더 경로, 정보, 로그.
+- 디코더 창이 비면 "디코더 경로"에서 디코더 런타임 폴더(libsigrokdecode-4.dll이 있는 곳)를 정한다.
   샘플 수는 샘플레이트 × 시간이다 (시간 칸에 마우스를 올리면 보인다).
   처음 열 때 펌웨어(firmware\fx2lafw-saleae-logic.fw)를 올리느라 2초쯤 걸린다.
   수집 중에는 파형이 실시간으로 늘어난다. 수집 파일은 %LOCALAPPDATA%\logicview\captures 에 쌓인다.
@@ -52,6 +55,7 @@ logicview.exe 를 실행한다.
   lvcli bench -r 24M -s 50M -n 5            (이 PC의 USB 포트가 24 MHz를 끊김 없이 받는지)
   lvcli capture -d usb/1-14 -r 200M -s 400M --level 3.3 -o u3.lvcap   (WeAct U3, 16채널, 3.3 V 신호)
   lvcli capture -r 200M -s 400M --channels 8 -o u3-8.lvcap               (8채널만: 파일이 절반)
+  lvcli fw-update SLOT0_CH32H417_Logic_Analyzer_APP_v0.2.bin [--slot 0] --yes   (U3 펌웨어 업데이트)
 
 
 4. MCP (Claude Code 등에서 Saleae Logic 2 MCP 도구로 쓰기)

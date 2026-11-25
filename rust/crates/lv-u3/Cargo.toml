@@ -12,4 +12,9 @@ nusb = "0.2.9"
 thiserror = "2.0.21"
 
 [target.'cfg(windows)'.dependencies]
+# The pure Rust backend: the C one exports its functions from our executables.
+hidapi = { version = "2.6.3", default-features = false, features = ["windows-native"] }
 libloading = "0.9.0"
+
+[target.'cfg(not(windows))'.dependencies]
+hidapi = "2.6.3"

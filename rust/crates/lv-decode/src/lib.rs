@@ -9,10 +9,13 @@
 //! <runtime>/share/libsigrokdecode/decoders/    decoder scripts
 //! ```
 //!
-//! It is found through `LOGICVIEW_SIGROK_DIR`, then `sigrok\` next to the
-//! executable, then the executable's own folder. libsigrokdecode embeds
-//! Python, which can only be started once per process, so the runtime is
-//! global and decoding sessions run one at a time.
+//! It is found through `LOGICVIEW_SIGROK_DIR`, the folder set with
+//! [`set_runtime_dir`] (the app's setting), `sigrok\` next to the executable,
+//! the executable's own folder, then `build\<folder>` above the executable
+//! (a development build in this repository). libsigrokdecode embeds Python,
+//! which can only be started once per process, so the runtime is global and
+//! decoding sessions run one at a time. A runtime that was not found is
+//! looked for again on the next use.
 
 mod ffi;
 
@@ -225,7 +228,11 @@ pub struct Runtime {
 unsafe impl Send for Runtime {}
 unsafe impl Sync for Runtime {}
 
-static RUNTIME: OnceLock<std::result::Result<Runtime, String>> = OnceLock::new();
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+/// Held while the runtime is being started, so two callers do not race.
+static STARTING: Mutex<()> = Mutex::new(());
+/// The runtime folder set with [`set_runtime_dir`].
+static CONFIGURED: Mutex<Option<PathBuf>> = Mutex::new(None);
 static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static VPRINTF: OnceLock<(
     unsafe extern "C" fn(*const c_char, *mut c_void) -> *mut c_char,
@@ -284,11 +291,75 @@ fn has_runtime(dir: &Path) -> bool {
         && dir.join("share/libsigrokdecode/decoders").is_dir()
 }
 
+/// Whether `dir` holds a decoder runtime, and if not, what is missing.
+pub fn check_runtime_dir(dir: &Path) -> std::result::Result<(), String> {
+    if !dir.is_dir() {
+        return Err(format!("{} is not a folder", dir.display()));
+    }
+    if !dir.join("libsigrokdecode-4.dll").is_file() {
+        return Err(format!("{} has no libsigrokdecode-4.dll", dir.display()));
+    }
+    if !dir.join("share/libsigrokdecode/decoders").is_dir() {
+        return Err(format!(
+            "{} has no share\\libsigrokdecode\\decoders folder",
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Look for the runtime in `dir` (a folder with libsigrokdecode-4.dll, or a
+/// `sigrok-cli.exe` in one) before the default places. Takes effect when
+/// the runtime starts; once it runs, it stays where it is until the program
+/// ends.
+pub fn set_runtime_dir(dir: Option<PathBuf>) {
+    let dir = dir.map(|p| {
+        if p.is_file() {
+            p.parent().map(Path::to_path_buf).unwrap_or(p)
+        } else {
+            p
+        }
+    });
+    if let Ok(mut c) = CONFIGURED.lock() {
+        *c = dir;
+    }
+}
+
+/// The folder the running decoder runtime was loaded from, if it runs.
+pub fn running_dir() -> Option<&'static Path> {
+    RUNTIME.get().map(|r| r.dir.as_path())
+}
+
+/// `build\<folder>` with a runtime in a folder above the executable: a
+/// development build of this repository (`rust\target\release`).
+fn build_dirs() -> Vec<PathBuf> {
+    let Some(exe) = std::env::current_exe().ok() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for anc in exe.ancestors().skip(1).take(6) {
+        let Ok(rd) = std::fs::read_dir(anc.join("build")) else {
+            continue;
+        };
+        let mut found: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| has_runtime(p))
+            .collect();
+        found.sort();
+        out.extend(found);
+    }
+    out
+}
+
 /// Where the decoder runtime is looked for, in order.
 pub fn runtime_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Some(d) = std::env::var_os("LOGICVIEW_SIGROK_DIR") {
         v.push(PathBuf::from(d));
+    }
+    if let Some(d) = CONFIGURED.lock().ok().and_then(|c| c.clone()) {
+        v.push(d);
     }
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
@@ -297,15 +368,22 @@ pub fn runtime_candidates() -> Vec<PathBuf> {
         v.push(exe_dir.join("sigrok"));
         v.push(exe_dir);
     }
+    v.extend(build_dirs());
     v
 }
 
-/// The decoder runtime, started on first use.
+/// The decoder runtime, started on first use. When it cannot be started,
+/// the next call tries again (after the folder was set, for instance).
 pub fn runtime() -> Result<&'static Runtime> {
-    RUNTIME
-        .get_or_init(start_runtime)
-        .as_ref()
-        .map_err(|e| Error::Runtime(e.clone()))
+    if let Some(r) = RUNTIME.get() {
+        return Ok(r);
+    }
+    let _g = STARTING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = RUNTIME.get() {
+        return Ok(r);
+    }
+    let rt = start_runtime().map_err(Error::Runtime)?;
+    Ok(RUNTIME.get_or_init(|| rt))
 }
 
 fn start_runtime() -> std::result::Result<Runtime, String> {
@@ -313,7 +391,7 @@ fn start_runtime() -> std::result::Result<Runtime, String> {
     let dir = candidates.iter().find(|d| has_runtime(d)).cloned().ok_or_else(|| {
         format!(
             "decoder runtime (libsigrokdecode-4.dll with share\\libsigrokdecode\\decoders) not found in: {}. \
-             Set LOGICVIEW_SIGROK_DIR to the app folder that has it",
+             Set the decoder runtime folder (the app folder that has it, e.g. SLogicView's)",
             candidates
                 .iter()
                 .map(|p| p.display().to_string())

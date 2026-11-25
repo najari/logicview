@@ -18,6 +18,7 @@
 
 mod acquire;
 mod app;
+mod applog;
 mod bench;
 mod capture_view;
 mod decode_ui;
@@ -28,10 +29,9 @@ use std::path::PathBuf;
 
 fn main() -> eframe::Result {
     prefer_dx12();
-    // nusb logs a failed transfer as ERROR even when lv-fx2lafw expects it
-    // (asking a stale handle whether it still works) and reports it itself.
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,nusb=off"))
-        .init();
+    // To stderr and to the settings window's log tab; nusb's own errors
+    // (expected failures lv-fx2lafw handles) only at debug level.
+    applog::init();
     let mut path = None;
     let mut bench = false;
     let mut view = None;

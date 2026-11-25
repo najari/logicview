@@ -54,6 +54,8 @@ pub struct CaptureRequest {
     pub trigger: Option<Trigger>,
     /// Input threshold in volts, for devices that have one (WeAct U3).
     pub threshold_volts: Option<f64>,
+    /// A press of the board key ends the capture (WeAct U3).
+    pub key_stop: bool,
 }
 
 impl CaptureRequest {
@@ -69,6 +71,7 @@ impl CaptureRequest {
             transfer_count: None,
             trigger: None,
             threshold_volts: None,
+            key_stop: false,
         }
     }
 
@@ -221,6 +224,7 @@ impl Capture {
             )));
         }
         let unit = lv_store::unit_for(channels);
+        device.set_key_stop(req.key_stop);
         if let Some(t) = req.threshold_volts {
             device.set_threshold(t)?;
         }

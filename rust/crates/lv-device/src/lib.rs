@@ -4,8 +4,13 @@
 use std::sync::atomic::AtomicBool;
 
 use lv_fx2lafw::{FoundDevice, Fx2lafw};
-pub use lv_fx2lafw::{IDLE_RELEASE, Kept, StreamConfig, StreamEnd, StreamStats};
+pub use lv_fx2lafw::{
+    IDLE_RELEASE, Kept, StreamConfig, StreamEnd, StreamStats, default_firmware_dirs,
+};
 use lv_u3::{FoundU3, U3};
+
+/// Firmware update of the WeAct U3 (its IAP bootloader).
+pub use lv_u3::iap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -15,6 +20,8 @@ pub enum Error {
     U3(#[from] lv_u3::Error),
     #[error("{0} has no adjustable input threshold")]
     NoThreshold(String),
+    #[error("{0} does not have this")]
+    NotSupported(String),
     #[error("{name} samples at most {max} channels ({asked} asked for)")]
     Channels {
         name: String,
@@ -73,8 +80,37 @@ impl Found {
     pub fn channel_choices(&self) -> &'static [usize] {
         match self {
             Found::Fx2(_) => &[8],
-            Found::U3(_) => &[8, 16],
+            Found::U3(_) => &[2, 4, 8, 16],
         }
+    }
+
+    /// The serial number, where the device reports one.
+    pub fn serial(&self) -> Option<&str> {
+        match self {
+            Found::Fx2(_) => None,
+            Found::U3(f) => Some(&f.serial),
+        }
+    }
+
+    /// How the device is reached, for people.
+    pub fn transport(&self) -> &'static str {
+        match self {
+            Found::Fx2(_) => "WinUSB",
+            Found::U3(f) => match f.via {
+                lv_u3::Via::Ch375 => "CH375",
+                lv_u3::Via::Usb => "WinUSB",
+            },
+        }
+    }
+
+    /// bcdUSB of the link (0x0300 for USB 3.0).
+    pub fn usb_version(&self) -> u16 {
+        self.info().usb_version()
+    }
+
+    /// The WeAct U3: input level, board key, indicator, channel modes.
+    pub fn is_u3(&self) -> bool {
+        matches!(self, Found::U3(_))
     }
 
     /// Sample rates the device offers with `channels` channels, slowest
@@ -260,6 +296,41 @@ impl Device {
         match self {
             Device::Fx2(_) => lv_fx2lafw::protocol::transfer_size(rate),
             Device::U3(d) => lv_u3::protocol::transfer_size(rate, d.unitsize()),
+        }
+    }
+
+    fn not_supported(&self) -> Error {
+        Error::NotSupported(self.name().to_string())
+    }
+
+    /// A press of the board key ends the capture (WeAct U3, firmware 0.2).
+    pub fn set_key_stop(&mut self, on: bool) {
+        if let Device::U3(d) = self {
+            d.key_stop = on;
+        }
+    }
+
+    /// The board key press counter, if the device has a key.
+    pub fn key_count(&mut self) -> Result<Option<u8>, Error> {
+        match self {
+            Device::U3(d) if d.has_key_and_led() => Ok(d.key_count()?),
+            _ => Ok(None),
+        }
+    }
+
+    /// Set the indicator brightness (percent, see `lv_u3::protocol::LED_LEVELS`).
+    pub fn set_led_brightness(&mut self, level: u8) -> Result<(), Error> {
+        match self {
+            Device::U3(d) => Ok(d.set_led_brightness(level)?),
+            _ => Err(self.not_supported()),
+        }
+    }
+
+    /// Restart the device in its firmware update mode.
+    pub fn enter_update_mode(&mut self) -> Result<(), Error> {
+        match self {
+            Device::U3(d) => Ok(d.enter_iap()?),
+            _ => Err(self.not_supported()),
         }
     }
 

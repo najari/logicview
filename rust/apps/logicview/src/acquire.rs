@@ -4,9 +4,9 @@
 //! started within a few seconds, then released ([`lv_device::IDLE_RELEASE`]).
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -64,7 +64,13 @@ pub fn new_capture_path() -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-pub fn start(found: Found, req: CaptureRequest, slot: DeviceSlot, ctx: egui::Context) -> Session {
+pub fn start(
+    found: Found,
+    req: CaptureRequest,
+    slot: DeviceSlot,
+    usb_lock: Arc<Mutex<()>>,
+    ctx: egui::Context,
+) -> Session {
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let session = Session {
@@ -79,7 +85,7 @@ pub fn start(found: Found, req: CaptureRequest, slot: DeviceSlot, ctx: egui::Con
     };
     thread::Builder::new()
         .name("lv-session".into())
-        .spawn(move || run(found, req, slot, stop, tx, ctx))
+        .spawn(move || run(found, req, slot, &usb_lock, stop, tx, ctx))
         .expect("spawn session thread");
     session
 }
@@ -88,6 +94,7 @@ fn run(
     found: Found,
     req: CaptureRequest,
     slot: DeviceSlot,
+    usb_lock: &Mutex<()>,
     stop: Arc<AtomicBool>,
     tx: Sender<Msg>,
     ctx: egui::Context,
@@ -96,6 +103,8 @@ fn run(
         let _ = tx.send(m);
         ctx.request_repaint();
     };
+    // The board key watcher uses the kept device between its polls.
+    let guard = usb_lock.lock().unwrap_or_else(|e| e.into_inner());
     let dev = match lv_device::reuse(slot.take(), &found) {
         Some(d) => d,
         None => {
@@ -111,6 +120,7 @@ fn run(
             }
         }
     };
+    drop(guard);
     if stop.load(Ordering::Relaxed) {
         slot.put(dev);
         send(Msg::Finished(Err("시작하기 전에 중지했습니다".into())));

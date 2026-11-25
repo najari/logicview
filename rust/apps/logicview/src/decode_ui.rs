@@ -2,7 +2,7 @@
 //! with progress (DEC-4), annotation rows under the waveform and the data
 //! table (UI-9).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
@@ -441,6 +441,9 @@ pub struct DecodeUi {
     preset_name: String,
     /// Presets read from `app.db`; `None` = read again.
     presets: Option<Vec<(String, String)>>,
+    /// The decoder path form, read from `app.db` when first shown.
+    paths: Option<crate::settings::DecoderPaths>,
+    paths_message: Option<String>,
 }
 
 impl Default for DecodeUi {
@@ -455,6 +458,8 @@ impl Default for DecodeUi {
             message: None,
             preset_name: String::new(),
             presets: None,
+            paths: None,
+            paths_message: None,
         }
     }
 }
@@ -544,6 +549,125 @@ impl DecodeUi {
         self.open = open;
     }
 
+    /// Where the decoder runtime and extra decoders are (`app.db`), folded
+    /// away unless the runtime could not be started.
+    fn paths_section(&mut self, ui: &mut egui::Ui, db: &AppDb) {
+        let failed = matches!(self.catalog, Catalog::Failed(_));
+        egui::CollapsingHeader::new("디코더 경로")
+            .id_salt("dec-paths")
+            .default_open(failed)
+            .open(failed.then_some(true))
+            .show(ui, |ui| self.paths_ui(ui, db));
+    }
+
+    /// The decoder runtime folder and extra decoder folders (also on the
+    /// settings window's decoder tab).
+    pub fn paths_ui(&mut self, ui: &mut egui::Ui, db: &AppDb) {
+        let failed = matches!(self.catalog, Catalog::Failed(_));
+        let paths = self
+            .paths
+            .get_or_insert_with(|| crate::settings::DecoderPaths::load(db));
+        let mut changed = false;
+        let mut retry = false;
+        ui.label(
+            "런타임 폴더 (libsigrokdecode-4.dll과 share\\libsigrokdecode\\decoders가 있는 곳)",
+        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut paths.runtime_dir)
+                    .desired_width(250.0)
+                    .hint_text("비우면 기본 위치에서 찾음"),
+            );
+            if ui.button("찾아보기…").clicked()
+                && let Some(d) = rfd::FileDialog::new().pick_folder()
+            {
+                paths.runtime_dir = d.display().to_string();
+            }
+            if ui.button("적용").clicked() {
+                let dir = paths.runtime_dir.trim();
+                match (dir.is_empty(), lv_decode::check_runtime_dir(Path::new(dir))) {
+                    (false, Err(e)) => {
+                        self.paths_message = Some(format!("쓸 수 없는 폴더: {e}"));
+                    }
+                    _ => {
+                        changed = true;
+                        retry = failed;
+                    }
+                }
+            }
+        });
+        match lv_decode::running_dir() {
+            Some(d) => {
+                ui.label(format!("사용 중: {}", d.display()));
+                let set = paths.runtime_dir.trim();
+                if !set.is_empty() && Path::new(set) != d {
+                    ui.label("바꾼 런타임 폴더는 다음 실행부터 씁니다.");
+                }
+            }
+            None => {
+                ui.label("찾는 곳 (차례대로):");
+                for c in lv_decode::runtime_candidates() {
+                    ui.label(format!("  {}", c.display()));
+                }
+            }
+        }
+        ui.separator();
+        ui.label("추가 디코더 폴더 (직접 만든 디코더)");
+        let mut remove = None;
+        for (i, d) in paths.extra_dirs.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(d);
+                if ui.small_button("빼기").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            paths.extra_dirs.remove(i);
+            changed = true;
+        }
+        if ui.button("폴더 추가…").clicked()
+            && let Some(d) = rfd::FileDialog::new().pick_folder()
+        {
+            let d = d.display().to_string();
+            if !paths.extra_dirs.contains(&d) {
+                paths.extra_dirs.push(d);
+                changed = true;
+            }
+        }
+        if lv_decode::running_dir().is_some() {
+            ui.label("추가 디코더 폴더는 다음 실행부터 읽습니다.");
+        }
+        if let Some(m) = &self.paths_message {
+            ui.label(m);
+        }
+        if changed {
+            paths.apply();
+            self.paths_message = Some(match paths.save(db) {
+                Ok(()) => "저장했습니다".into(),
+                Err(e) => format!("저장하지 못했습니다: {e}"),
+            });
+            if retry {
+                self.catalog = start_catalog(ui.ctx());
+            }
+        }
+    }
+
+    /// The installed decoders, once loaded.
+    pub fn decoder_list(&self) -> Option<&[DecoderInfo]> {
+        match &self.catalog {
+            Catalog::Ready(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    /// Start loading the decoder list (if it is not loaded or loading).
+    pub fn load_catalog(&mut self, ctx: &egui::Context) {
+        if matches!(self.catalog, Catalog::NotLoaded | Catalog::Failed(_)) {
+            self.catalog = start_catalog(ctx);
+        }
+    }
+
     /// Load, save and delete named decoder stacks (`app.db`).
     fn preset_row(
         &mut self,
@@ -629,6 +753,7 @@ impl DecodeUi {
         recording: bool,
         db: &AppDb,
     ) {
+        self.paths_section(ui, db);
         let list = match &self.catalog {
             Catalog::Ready(l) => l.clone(),
             Catalog::Failed(e) => {

@@ -535,6 +535,31 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
 
 코드가 바뀌지 않았으므로 24 MHz 실패는 알려진 USB 포트·연결 상태 문제로 본다. 앱은 끊김을 버퍼 넘침으로 알리고 멈췄다.
 
+2026-11-19, `0002cad`(README만 바뀜)에서 다시 돌렸다.
+
+| 시험 | 결과 |
+| --- | --- |
+| build, fmt, clippy, `cargo test --release --workspace` | 경고 없음, 54개 모두 통과 |
+| `lvcli bench --rate 24M --samples 50M --runs 5` | **3/5**. 1·2회째가 1.02초, 1.15초에서 "장치 버퍼가 넘쳐 데이터가 끊김" |
+| 같은 bench 다시 | **4/5**. 5회째가 1.95초에서 같은 이유로 멈춤 |
+| `lvcli bench --rate 16M --samples 50M --runs 3` / `--rate 12M --runs 3` | 3/3 (3.135 s, 대기열 최대 0%) / 3/3 |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버 / Python 서버) | 64개 / 62개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
+| `scripts\package.ps1` → `scripts\test-package.ps1 -Hardware` | 958개 파일, zip 22.3 MB. 7개 모두 통과 |
+
+11-16에는 5/5였던 같은 코드가 이날 24 MHz에서 10회 중 3회 끊겼다. 16 MHz 이하는 안정적이었다.
+
+2026-11-25, `0002cad`에서 다시 돌렸다. 애널라이저가 꽂혀 있지 않아(Windows 장치 목록에 `0925:3881`이 지금 연결된 것으로 없음)
+하드웨어 시험은 하지 못했다.
+
+| 시험 | 결과 |
+| --- | --- |
+| build, fmt, clippy, `cargo test --release --workspace` | 경고 없음, 54개 모두 통과 |
+| `lvcli devices`, `lvcli bench` | "지원하는 장치가 없습니다" |
+| `mcp/tests/test_mcp.py` (`--hardware` 없이, Rust 서버 / Python 서버) | 54개 / 52개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
+| `scripts\package.ps1` → `scripts\test-package.ps1` (`-Hardware` 없이) | 958개 파일, zip 22.3 MB. 5개 모두 통과 |
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

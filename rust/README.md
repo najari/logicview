@@ -655,8 +655,8 @@ FX2는 없었다. 입력에 신호를 걸지 않았다.
 | `lvcli bench -r 20M -s 20M -n 2` / `-r 4M -s 4M -n 2` | 2/2 / 2/2 |
 | `mcp/tests/test_mcp.py --hardware` (Rust 서버) | 67개 모두 통과 (U3 항목 포함) |
 | 같은 시험 (Python 서버, 하드웨어 없이) | 52개 모두 통과 |
-| `extensions	estsun-tests.ps1` | 71개 모두 통과 |
-| `scripts\package.ps1` → `scripts	est-package.ps1 -Hardware` | 958개 파일, zip 22.4 MB. 7개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
+| `scripts\package.ps1` → `scripts\test-package.ps1 -Hardware` | 958개 파일, zip 22.4 MB. 7개 모두 통과 |
 
 ## PRD와 다르게 한 것
 

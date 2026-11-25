@@ -11,13 +11,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lv_capture::{CaptureRequest, Outcome, Trigger};
 use lv_decode::{Control, StackEntry};
-use lv_fx2lafw::{FoundDevice, StreamEnd};
+use lv_device::{Found, StreamEnd};
 use lv_store::{CaptureFile, CaptureWriter, NewCapture, Status};
 use serde_json::{Value, json};
 
 /// An opened device, shared with the app's own capturing. It is released
 /// a few seconds after the last capture so other programs can open it.
-pub use lv_fx2lafw::DeviceSlot;
+pub use lv_device::DeviceSlot;
 
 #[derive(Debug, Clone)]
 pub struct McpError {
@@ -939,12 +939,12 @@ impl Server {
 
     // ---- devices and captures ---------------------------------------------------------
 
-    fn devices(&self) -> R<Vec<FoundDevice>> {
-        lv_fx2lafw::list_devices().map_err(|e| McpError::new("DEVICE_ERROR", e.to_string()))
+    fn devices(&self) -> R<Vec<Found>> {
+        lv_device::list_devices().map_err(|e| McpError::new("DEVICE_ERROR", e.to_string()))
     }
 
-    fn device_id(d: &FoundDevice) -> String {
-        format!("fx2lafw:{}", d.location)
+    fn device_id(d: &Found) -> String {
+        format!("{}:{}", d.driver(), d.location())
     }
 
     fn get_devices(&self, _args: &Value) -> R<Value> {
@@ -1030,16 +1030,28 @@ impl Server {
                 bad.join(", ")
             )
         })?;
-        need(
-            !truthy(dev_cfg.get("digitalThresholdVolts")),
-            "INVALID_REQUEST",
-            || {
-                format!(
-                    "Digital threshold \"{}\" requested, but the requested device does not support a configurable threshold voltage.",
-                    dev_cfg["digitalThresholdVolts"]
-                )
-            },
-        )?;
+        let threshold = match (
+            dev_cfg
+                .get("digitalThresholdVolts")
+                .filter(|v| truthy(Some(v))),
+            found.threshold_range(),
+        ) {
+            (None, _) => None,
+            (Some(v), None) => {
+                return Err(invalid(format!(
+                    "Digital threshold \"{v}\" requested, but the requested device does not support a configurable threshold voltage."
+                )));
+            }
+            (Some(v), Some((lo, hi))) => {
+                let t = v.as_f64().unwrap_or(f64::NAN);
+                need((lo..=hi).contains(&t), "INVALID_REQUEST", || {
+                    format!(
+                        "Digital threshold \"{v}\" is out of range: this device takes {lo} V to {hi} V."
+                    )
+                })?;
+                Some(t)
+            }
+        };
         need(
             !truthy(dev_cfg.get("glitchFilters")),
             "INVALID_REQUEST",
@@ -1050,13 +1062,14 @@ impl Server {
             "digitalSampleRate must be provided (samples/sec).".into()
         })?;
         let rate_u = rate.round() as u64;
+        let rates = found.samplerates();
         need(
-            lv_fx2lafw::SAMPLERATES.contains(&rate_u) && rate.fract() == 0.0,
+            rates.contains(&rate_u) && rate.fract() == 0.0,
             "INVALID_REQUEST",
             || {
                 format!(
                     "Invalid supplied sample rate. Allowed sample rates: {}",
-                    lv_fx2lafw::SAMPLERATES
+                    rates
                         .iter()
                         .map(|r| r.to_string())
                         .collect::<Vec<_>>()
@@ -1134,6 +1147,7 @@ impl Server {
         let mut req = CaptureRequest::new(rate_u, limit, path.clone());
         req.overwrite = true;
         req.trigger = trigger;
+        req.threshold_volts = threshold;
         let cap = self.register(Capture {
             id: cid,
             path,
@@ -2182,7 +2196,7 @@ impl Server {
 /// Capture into `req.output` (a device capture of `start_capture`).
 fn run_capture(
     cap: &Capture,
-    found: FoundDevice,
+    found: Found,
     req: CaptureRequest,
     slot: &DeviceSlot,
     enabled: &[usize],
@@ -2191,9 +2205,9 @@ fn run_capture(
     let dev_err = |e: String| McpError::new("DEVICE_ERROR", e);
     let path = req.output.clone();
     let trigger_mode = req.trigger.is_some();
-    let dev = match lv_fx2lafw::reuse(slot.take(), &found) {
+    let dev = match lv_device::reuse(slot.take(), &found) {
         Some(d) => d,
-        None => lv_fx2lafw::open(&found, &lv_fx2lafw::default_firmware_dirs())
+        None => lv_device::open(&found)
             .map_err(|e| dev_err(format!("Opening the device failed: {e}")))?,
     };
     let c = lv_capture::Capture::start(dev, req)

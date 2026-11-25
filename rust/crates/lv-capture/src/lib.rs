@@ -19,7 +19,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
-use lv_fx2lafw::{Fx2lafw, StreamConfig, StreamEnd, StreamStats};
+use lv_device::{Device, StreamConfig, StreamEnd, StreamStats};
 use lv_store::{CaptureInfo, CaptureWriter, NewCapture, Status, WriteStats};
 
 pub use trigger::{Cond, Trigger};
@@ -28,7 +28,7 @@ use trigger::{Matcher, PreBuffer};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Device(#[from] lv_fx2lafw::Error),
+    Device(#[from] lv_device::Error),
     #[error(transparent)]
     Store(#[from] lv_store::Error),
     #[error("capture thread stopped unexpectedly")]
@@ -50,6 +50,8 @@ pub struct CaptureRequest {
     /// Start storing at a trigger (CAP-8). `limit_samples` then counts the
     /// stored samples, before and after the trigger.
     pub trigger: Option<Trigger>,
+    /// Input threshold in volts, for devices that have one (WeAct U3).
+    pub threshold_volts: Option<f64>,
 }
 
 impl CaptureRequest {
@@ -64,6 +66,7 @@ impl CaptureRequest {
             transfer_size: None,
             transfer_count: None,
             trigger: None,
+            threshold_volts: None,
         }
     }
 
@@ -168,7 +171,7 @@ pub struct CaptureReport {
     pub trigger_sample: Option<u64>,
 }
 
-type UsbResult = (Fx2lafw, Result<StreamStats, lv_fx2lafw::Error>);
+type UsbResult = (Device, Result<StreamStats, lv_device::Error>);
 
 /// What the writer thread reports when the file is closed.
 struct WriterDone {
@@ -201,13 +204,16 @@ pub struct Capture {
 
 impl Capture {
     /// Create the output file and start streaming from `device`.
-    pub fn start(mut device: Fx2lafw, req: CaptureRequest) -> Result<Capture, Error> {
+    pub fn start(mut device: Device, req: CaptureRequest) -> Result<Capture, Error> {
         // Validate the rate before touching the file.
-        lv_fx2lafw::protocol::start_command(req.samplerate)?;
+        device.check_rate(req.samplerate)?;
+        if let Some(t) = req.threshold_volts {
+            device.set_threshold(t)?;
+        }
         let writer = CaptureWriter::create(
             &req.output,
             &NewCapture {
-                device: format!("{} {}", device.name, device.location),
+                device: format!("{} {}", device.name(), device.location()),
                 samplerate_hz: req.samplerate,
                 channel_names: req.channel_names.clone(),
             },
@@ -234,7 +240,7 @@ impl Capture {
         };
         let transfer_bytes = cfg
             .transfer_size
-            .unwrap_or_else(|| lv_fx2lafw::protocol::transfer_size(req.samplerate));
+            .unwrap_or_else(|| device.transfer_size(req.samplerate));
         let capacity = (req.queue_bytes / transfer_bytes).max(4);
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -323,21 +329,19 @@ impl Capture {
     }
 
     /// Wait for the end. The device is handed back for the next capture.
-    pub fn wait(self) -> (Option<Fx2lafw>, Result<CaptureReport, Error>) {
+    pub fn wait(self) -> (Option<Device>, Result<CaptureReport, Error>) {
         let (device, stream) = match self.usb.join() {
-            Ok((d, s)) => (Some(d), s),
-            Err(_) => (
-                None,
-                Err(lv_fx2lafw::Error::Protocol("USB thread panicked".into())),
-            ),
+            Ok((d, s)) => (Some(d), Some(s)),
+            Err(_) => (None, None),
         };
         let written = match self.writer.join() {
             Ok(w) => w,
             Err(_) => return (device, Err(Error::ThreadPanicked)),
         };
         let stream = match stream {
-            Ok(s) => s,
-            Err(e) => return (device, Err(e.into())),
+            Some(Ok(s)) => s,
+            Some(Err(e)) => return (device, Err(e.into())),
+            None => return (device, Err(Error::ThreadPanicked)),
         };
         let done = match written {
             Ok(w) => w,

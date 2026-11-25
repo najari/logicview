@@ -1,7 +1,7 @@
 //! Capturing from the app (UI-1, UI-8): a background thread opens the
 //! device (uploading firmware if needed, which takes ~2 s), runs the capture
 //! and reports back over a channel. The opened device is kept for a capture
-//! started within a few seconds, then released ([`lv_fx2lafw::IDLE_RELEASE`]).
+//! started within a few seconds, then released ([`lv_device::IDLE_RELEASE`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use lv_capture::{Capture, CaptureReport, CaptureRequest, Outcome, Progress};
-pub use lv_fx2lafw::DeviceSlot;
-use lv_fx2lafw::{FoundDevice, StreamEnd};
+pub use lv_device::DeviceSlot;
+use lv_device::{Found, StreamEnd};
 
 pub enum Msg {
     /// Something to show while the device is being opened.
@@ -64,12 +64,7 @@ pub fn new_capture_path() -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-pub fn start(
-    found: FoundDevice,
-    req: CaptureRequest,
-    slot: DeviceSlot,
-    ctx: egui::Context,
-) -> Session {
+pub fn start(found: Found, req: CaptureRequest, slot: DeviceSlot, ctx: egui::Context) -> Session {
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let session = Session {
@@ -90,7 +85,7 @@ pub fn start(
 }
 
 fn run(
-    found: FoundDevice,
+    found: Found,
     req: CaptureRequest,
     slot: DeviceSlot,
     stop: Arc<AtomicBool>,
@@ -101,13 +96,13 @@ fn run(
         let _ = tx.send(m);
         ctx.request_repaint();
     };
-    let dev = match lv_fx2lafw::reuse(slot.take(), &found) {
+    let dev = match lv_device::reuse(slot.take(), &found) {
         Some(d) => d,
         None => {
-            if !found.has_firmware {
+            if found.needs_firmware() {
                 send(Msg::Status("펌웨어를 올리는 중… (약 2초)".into()));
             }
-            match lv_fx2lafw::open(&found, &lv_fx2lafw::default_firmware_dirs()) {
+            match lv_device::open(&found) {
                 Ok(d) => d,
                 Err(e) => {
                     send(Msg::Finished(Err(format!("장치를 열 수 없습니다: {e}"))));

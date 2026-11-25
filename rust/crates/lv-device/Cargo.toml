@@ -1,0 +1,12 @@
+[package]
+name = "lv-device"
+description = "All supported analyzers (fx2lafw, WeAct U3) behind one type"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lv-fx2lafw = { path = "../lv-fx2lafw" }
+lv-u3 = { path = "../lv-u3" }
+nusb = "0.2.9"
+thiserror = "2.0.21"

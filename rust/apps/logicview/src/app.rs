@@ -10,7 +10,7 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Key, Rect, Sense, Shape, Stroke, pos2, vec2,
 };
 use lv_capture::{CaptureRequest, Outcome, Trigger};
-use lv_fx2lafw::{FoundDevice, SAMPLERATES};
+use lv_device::Found;
 
 use crate::acquire::{self, DeviceSlot, Msg, Session};
 use crate::bench::Bench;
@@ -77,12 +77,12 @@ pub struct App {
     bench: Option<Bench>,
 
     // Capture settings and state (UI-1).
-    devices: Vec<FoundDevice>,
+    devices: Vec<Found>,
     dev_sel: usize,
     last_scan: Option<Instant>,
     /// A device scan running on another thread (USB enumeration can take
     /// tens of milliseconds, too long for the UI thread).
-    scan_rx: Option<std::sync::mpsc::Receiver<Vec<FoundDevice>>>,
+    scan_rx: Option<std::sync::mpsc::Receiver<Vec<Found>>>,
     slot: DeviceSlot,
     rate: u64,
     /// Capture length in seconds; `None` = until stopped.
@@ -90,6 +90,8 @@ pub struct App {
     trigger_on: bool,
     trigger_text: String,
     pre_percent: u8,
+    /// Signal level in volts, for devices with a threshold (WeAct U3).
+    level: f64,
     session: Option<Session>,
     last_refresh: Instant,
     /// Keep the whole capture in view while recording, until the user zooms.
@@ -194,6 +196,7 @@ impl App {
             trigger_on: false,
             trigger_text: "0=f".into(),
             pre_percent: 10,
+            level: 3.3,
             session: None,
             last_refresh: Instant::now(),
             follow: false,
@@ -216,6 +219,7 @@ impl App {
                 shown: Vec::new(),
                 trigger_text: String::new(),
                 pre_percent: 0,
+                level: 0.0,
             },
         };
         // MCP captures and the toolbar share one opened device.
@@ -223,7 +227,10 @@ impl App {
         // UI-10: the last settings, then the command line on top.
         let last = Remembered::load(&app.db, app.remembered());
         app.apply(&last);
-        if let Some(r) = preset.rate.filter(|r| SAMPLERATES.contains(r)) {
+        if let Some(r) = preset
+            .rate
+            .filter(|r| lv_device::all_samplerates().contains(r))
+        {
             app.rate = r;
         }
         if let Some(d) = preset.duration {
@@ -259,6 +266,7 @@ impl App {
             shown: self.shown.clone(),
             trigger_text: self.trigger_text.clone(),
             pre_percent: self.pre_percent,
+            level: self.level,
         }
     }
 
@@ -269,6 +277,7 @@ impl App {
         self.shown = r.shown.clone();
         self.trigger_text = r.trigger_text.clone();
         self.pre_percent = r.pre_percent;
+        self.level = r.level;
     }
 
     /// Write changed settings, once no text field is being edited (and on
@@ -447,7 +456,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            match lv_fx2lafw::list_devices() {
+            match lv_device::list_devices() {
                 Ok(list) => {
                     let _ = tx.send(list);
                 }
@@ -465,15 +474,42 @@ impl App {
         };
         match rx.try_recv() {
             Ok(list) => {
-                let keep = self.devices.get(self.dev_sel).map(|d| d.location.clone());
+                let keep = self
+                    .devices
+                    .get(self.dev_sel)
+                    .map(|d| d.location().to_string());
                 self.dev_sel = keep
-                    .and_then(|loc| list.iter().position(|d| d.location == loc))
+                    .and_then(|loc| list.iter().position(|d| d.location() == loc))
                     .unwrap_or(0);
                 self.devices = list;
                 self.scan_rx = None;
+                self.fit_rate();
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => self.scan_rx = None,
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// Sample rates of the selected device (all known ones without a device).
+    fn rates(&self) -> Vec<u64> {
+        self.devices
+            .get(self.dev_sel)
+            .map(Found::samplerates)
+            .unwrap_or_else(lv_device::all_samplerates)
+    }
+
+    /// Keep the rate one the selected device offers: the fastest one not
+    /// above it, or the slowest.
+    fn fit_rate(&mut self) {
+        let rates = self.rates();
+        if !rates.contains(&self.rate)
+            && let Some(&r) = rates
+                .iter()
+                .rev()
+                .find(|&&r| r <= self.rate)
+                .or(rates.first())
+        {
+            self.rate = r;
         }
     }
 
@@ -482,6 +518,14 @@ impl App {
             self.message = Some("장치가 없습니다. 애널라이저를 꽂고 '다시 찾기'를 누르세요".into());
             return;
         };
+        if !found.samplerates().contains(&self.rate) {
+            self.message = Some(format!(
+                "{}는 {}로 수집할 수 없습니다",
+                found.name(),
+                fmt_rate(self.rate)
+            ));
+            return;
+        }
         let trigger = if self.trigger_on {
             match Trigger::parse(&self.trigger_text, self.pre_percent) {
                 Ok(t) => Some(t),
@@ -507,6 +551,9 @@ impl App {
         let mut req = CaptureRequest::new(self.rate, limit, path);
         req.channel_names = self.names.clone();
         req.trigger = trigger;
+        req.threshold_volts = found
+            .threshold_range()
+            .map(|_| lv_device::threshold_for_level(self.level));
         self.message = None;
         self.error = None;
         self.session = Some(acquire::start(found, req, self.slot.clone(), ctx.clone()));
@@ -734,25 +781,29 @@ impl App {
                 let selected = self
                     .devices
                     .get(self.dev_sel)
-                    .map(|d| format!("{}  {}", d.location, d.name()))
+                    .map(|d| format!("{}  {}", d.location(), d.name()))
                     .unwrap_or_else(|| "장치 없음".into());
+                let before = self.dev_sel;
                 egui::ComboBox::from_id_salt("device")
                     .selected_text(selected)
                     .width(250.0)
                     .show_ui(ui, |ui| {
                         for (i, d) in self.devices.iter().enumerate() {
-                            let fw = if d.has_firmware {
-                                ""
-                            } else {
+                            let fw = if d.needs_firmware() {
                                 "  (펌웨어 올림)"
+                            } else {
+                                ""
                             };
                             ui.selectable_value(
                                 &mut self.dev_sel,
                                 i,
-                                format!("{}  {}{fw}", d.location, d.name()),
+                                format!("{}  {}{fw}", d.location(), d.name()),
                             );
                         }
                     });
+                if self.dev_sel != before {
+                    self.fit_rate();
+                }
                 if ui.button("다시 찾기").clicked() {
                     self.scan_devices(ui.ctx());
                 }
@@ -762,10 +813,30 @@ impl App {
                     .selected_text(fmt_rate(self.rate))
                     .width(80.0)
                     .show_ui(ui, |ui| {
-                        for &r in SAMPLERATES.iter().rev() {
+                        for r in self.rates().into_iter().rev() {
                             ui.selectable_value(&mut self.rate, r, fmt_rate(r));
                         }
                     });
+                if self
+                    .devices
+                    .get(self.dev_sel)
+                    .is_some_and(|d| d.threshold_range().is_some())
+                {
+                    ui.label("레벨");
+                    egui::ComboBox::from_id_salt("level")
+                        .selected_text(format!("{} V", self.level))
+                        .width(60.0)
+                        .show_ui(ui, |ui| {
+                            for &l in lv_device::LEVELS {
+                                ui.selectable_value(&mut self.level, l, format!("{l} V"));
+                            }
+                        })
+                        .response
+                        .on_hover_text(format!(
+                            "신호의 High 전압. 입력 문턱 {:.2} V",
+                            lv_device::threshold_for_level(self.level)
+                        ));
+                }
                 ui.label("시간");
                 egui::ComboBox::from_id_salt("duration")
                     .selected_text(fmt_duration(self.duration))

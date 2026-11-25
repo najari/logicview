@@ -9,5 +9,5 @@ license.workspace = true
 crossbeam-channel = "0.5.17"
 log = "0.4.35"
 thiserror = "2.0.21"
-lv-fx2lafw = { path = "../lv-fx2lafw" }
+lv-device = { path = "../lv-device" }
 lv-store = { path = "../lv-store" }

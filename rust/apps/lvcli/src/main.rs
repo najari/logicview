@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use lv_capture::{Capture, CaptureReport, CaptureRequest, Outcome, Trigger};
-use lv_fx2lafw::{FoundDevice, Fx2lafw};
+use lv_device::{Device, Found};
 use lv_store::CaptureFile;
 
 use units::{fmt_bytes, fmt_rate, fmt_samples, parse_si};
@@ -168,10 +168,13 @@ struct DeviceArgs {
     /// 저장 대기열 크기(MiB)
     #[arg(long, default_value_t = 64)]
     queue_mib: usize,
+    /// 신호 레벨(V, 1.0~3.3). 입력 문턱을 조절할 수 있는 장치(WeAct U3)에서 문턱을 이 레벨에 맞춤
+    #[arg(long)]
+    level: Option<f64>,
 }
 
 fn main() {
-    // nusb logs failed transfers as ERROR; lv-fx2lafw reports them itself.
+    // nusb logs failed transfers as ERROR; the drivers report them themselves.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,nusb=off"))
         .init();
     if let Err(e) = run(Cli::parse()) {
@@ -243,35 +246,37 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 fn devices() -> Result<()> {
-    let list = lv_fx2lafw::list_devices()?;
+    let list = lv_device::list_devices()?;
     if list.is_empty() {
         println!(
             "지원하는 장치가 없습니다. 애널라이저가 꽂혀 있고 WinUSB 드라이버가 설치됐는지 확인하세요."
         );
         return Ok(());
     }
-    println!("{:<12} {:<10} {:<26} 펌웨어", "위치", "VID:PID", "모델");
+    println!(
+        "{:<12} {:<10} {:<30} {:<18} 샘플레이트",
+        "위치", "VID:PID", "모델", "상태"
+    );
     for d in list {
+        let rates = d.samplerates();
         println!(
-            "{:<12} {:04x}:{:04x}  {:<26} {}",
-            d.location,
-            d.info.vendor_id(),
-            d.info.product_id(),
+            "{:<12} {:04x}:{:04x}  {:<30} {:<18} {}~{}",
+            d.location(),
+            d.info().vendor_id(),
+            d.info().product_id(),
             d.name(),
-            if d.has_firmware {
-                "fx2lafw 올라감"
-            } else {
-                "없음 (열 때 올림)"
-            }
+            d.status(),
+            rates.first().map(|&r| fmt_rate(r)).unwrap_or_default(),
+            rates.last().map(|&r| fmt_rate(r)).unwrap_or_default(),
         );
     }
     Ok(())
 }
 
-fn pick_device(args: &DeviceArgs) -> Result<FoundDevice> {
-    let list = lv_fx2lafw::list_devices()?;
+fn pick_device(args: &DeviceArgs) -> Result<Found> {
+    let list = lv_device::list_devices()?;
     let found = match &args.device {
-        Some(loc) => list.into_iter().find(|d| &d.location == loc),
+        Some(loc) => list.into_iter().find(|d| d.location() == loc),
         None => list.into_iter().next(),
     };
     found.with_context(|| match &args.device {
@@ -280,17 +285,21 @@ fn pick_device(args: &DeviceArgs) -> Result<FoundDevice> {
     })
 }
 
-fn open_device(args: &DeviceArgs) -> Result<Fx2lafw> {
+fn open_device(args: &DeviceArgs) -> Result<Device> {
     let found = pick_device(args)?;
+    if args.level.is_some() && found.threshold_range().is_none() {
+        bail!(
+            "{}는 입력 문턱을 바꿀 수 없습니다 (--level을 빼세요)",
+            found.name()
+        );
+    }
     let t = Instant::now();
-    let dev = lv_fx2lafw::open(&found, &lv_fx2lafw::default_firmware_dirs())?;
+    let dev = lv_device::open(&found)?;
     eprintln!(
-        "장치: {} {} (fx2lafw {}.{}, REVID {}, 여는 데 {} ms)",
-        dev.name,
-        dev.location,
-        dev.fw_version.0,
-        dev.fw_version.1,
-        dev.revid,
+        "장치: {} {} ({}, 여는 데 {} ms)",
+        dev.name(),
+        dev.location(),
+        dev.describe(),
         t.elapsed().as_millis()
     );
     Ok(dev)
@@ -308,6 +317,7 @@ fn request(
     req.queue_bytes = args.queue_mib << 20;
     req.transfer_size = args.transfer_size;
     req.transfer_count = args.transfers;
+    req.threshold_volts = args.level.map(lv_device::threshold_for_level);
     req
 }
 
@@ -321,6 +331,7 @@ fn capture(
 ) -> Result<()> {
     let rate = parse_si(rate)?;
     let samples = samples.map(parse_si).transpose()?;
+    check_level(args)?;
     let mut req = request(rate, samples, output, overwrite, args);
     if let Some(names) = &opts.names {
         if names.len() > 8 {
@@ -384,6 +395,15 @@ fn capture(
     Ok(())
 }
 
+fn check_level(args: &DeviceArgs) -> Result<()> {
+    if let Some(l) = args.level
+        && !(1.0..=3.3).contains(&l)
+    {
+        bail!("--level은 1.0~3.3 V입니다 ({l}을 줌)");
+    }
+    Ok(())
+}
+
 fn print_report(r: &CaptureReport) {
     let s = &r.stream;
     println!("결과: {}", r.outcome.describe());
@@ -436,6 +456,7 @@ fn bench(
 ) -> Result<()> {
     let rate = parse_si(rate)?;
     let samples = parse_si(samples)?;
+    check_level(args)?;
     let dir = dir.unwrap_or_else(|| std::env::temp_dir().join("lvcli-bench"));
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("{} 폴더를 만들 수 없습니다", dir.display()))?;

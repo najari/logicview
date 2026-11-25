@@ -11,8 +11,8 @@ mod stream;
 use std::path::PathBuf;
 
 pub use device::{
-    FoundDevice, Fx2lafw, PROFILES, Profile, default_firmware_dirs, find_firmware, list_devices,
-    open, reuse,
+    FoundDevice, Fx2lafw, PROFILES, Profile, bus_ids, default_firmware_dirs, find_firmware,
+    list_devices, location_of, open, reuse,
 };
 pub use protocol::SAMPLERATES;
 pub use slot::{DeviceSlot, IDLE_RELEASE, Kept};

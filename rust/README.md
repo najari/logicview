@@ -11,6 +11,8 @@
 | 경로 | 내용 |
 | --- | --- |
 | `crates/lv-fx2lafw` | fx2lafw USB 드라이버 (nusb): 장치 찾기, 펌웨어 업로드, 시작 명령, bulk 스트리밍 |
+| `crates/lv-u3` | WeAct Logic Analyzer V2(U3, CH32H417, `1a86:5537`) 드라이버: CH375 드라이버(`CH375DLL64.DLL`) 또는 WinUSB·libusb(nusb) |
+| `crates/lv-device` | 두 드라이버를 한 타입으로: 장치 목록, 열기, 장치별 샘플레이트, 입력 문턱, 스트리밍 |
 | `crates/lv-store` | `.lvcap`(SQLite) 쓰기·읽기, zstd 압축, 줌 요약(OR·AND 3단계), `.sr` 불러오기·내보내기, Saleae CSV·바이너리 내보내기 |
 | `crates/lv-capture` | 수집 세션: USB 스레드 → 유계 대기열 → 저장 스레드, 진행 상태, 소프트웨어 트리거 |
 | `crates/lv-decode` | libsigrokdecode를 실행 중에 읽어 들여 디코더 스택 실행 (Saleae HLA 포함) |
@@ -41,6 +43,8 @@ lvcli capture -r 1M --time 5 -o cap.lvcap                # 5초 뒤 멈춤 (Ctrl
 lvcli capture -r 4M -s 1M -t 0=f,1=1 --pre 20 -o cap.lvcap --names TX,RX
                                                          # 트리거: D0 하강 AND D1 High, 앞 20%
 lvcli bench --rate 24M --samples 50M --runs 5            # 시제품 관문 시험
+lvcli capture -d usb/1-14 -r 200M -s 400M --level 3.3 -o u3.lvcap
+                                                         # WeAct U3: 200 MHz, 3.3 V 신호 (문턱 1.5 V)
 lvcli info cap.lvcap
 lvcli export cap.lvcap -f csv                            # cap.csv (Time [s],Channel 0..)
 lvcli export cap.lvcap -f bin -c 0,1                     # cap\digital_0.bin, digital_1.bin
@@ -559,6 +563,48 @@ Direct3D 12로 창이 제대로 그려지는지는 화면을 보지 않았고, �
 | `mcp/tests/test_mcp.py` (`--hardware` 없이, Rust 서버 / Python 서버) | 54개 / 52개 모두 통과 |
 | `extensions\tests\run-tests.ps1` | 71개 모두 통과 |
 | `scripts\package.ps1` → `scripts\test-package.ps1` (`-Hardware` 없이) | 958개 파일, zip 22.3 MB. 5개 모두 통과 |
+
+## WeAct Logic Analyzer V2 (U3) 지원 (2026-11-25)
+
+[WeAct Logic Analyzer V2](https://github.com/WeActStudio/WeActStudio.LogicAnalyzerV2)(CH32H417, USB 3.0,
+`1a86:5537`, 16채널 최대 200 MHz)에서 수집한다. 프로토콜은 WeAct의
+[U3LogicAnalyzer](https://github.com/WeActStudio/WeActStudio.U3LogicAnalyzer) libsigrok 드라이버
+(`wch-ch32h417-libusb`, `wch-ch32h417`)를 따랐다.
+
+- 명령은 bulk 0x01로 64바이트 `[cmd, len, data…]`, 답은 0x81로 32바이트 `[cmd|0x10, len, status, data…]`.
+  샘플은 0x82. 시작 전에 `0xA0 [폭 0x08, 분주 번호, 0]`, 시작 `0xA2`, 중지 `0xA3`(답 없음). 분주 번호는
+  샘플레이트 표의 순번이다 (USB 3.0: 200 MHz~4 MHz 25개, USB 2.0 8채널: 40 MHz~4 MHz 8개).
+- **8채널(D0~D7)만 쓴다.** `.lvcap`, 파형, 디코더, 트리거가 샘플마다 1바이트라서다. 16채널은 저장 형식부터 바꿔야 한다.
+- 장치 연결: Windows에서는 보드가 기본으로 WCH CH375 드라이버(`CH375_A64`)에 묶여 있어 그 드라이버가 깐
+  `CH375DLL64.DLL`(System32)을 실행 중에 읽어 쓴다 (zip에 넣지 않음). Device Manager에서 드라이버를 지우고
+  다시 꽂아 WinUSB로 바뀌면(펌웨어 0.2) nusb로 다룬다. 어느 쪽인지는 nusb가 알려 주는 장치 드라이버 이름으로
+  고른다. 위치는 FX2와 같은 `usb/<버스>-<포트>`.
+- 입력 문턱: 보드는 0.6~1.5 V(입력 단자 기준). 앱의 "레벨"(1.0~3.3 V, 신호의 High 전압)과
+  `lvcli --level`은 WeAct 프로그램과 같은 직선으로 문턱을 정한다 (3.3 V → 1.5 V, 1.8 V → 0.97 V).
+  MCP `start_capture`는 `digitalThresholdVolts`(0.6~1.5 V)를 그대로 받는다. 정하지 않으면 보드에 남은 값을 쓴다.
+- 앱: 장치 목록에 U3가 같이 나오고, 샘플레이트 목록이 고른 장치의 것으로 바뀐다. U3를 고르면 "레벨"이
+  나오고 `app.db`의 `capture.level`에 기억한다.
+- MCP: `deviceId`는 `weact-u3:usb/1-14`. Python MCP 서버(sigrok-cli 사용)는 U3를 다루지 않는다.
+- 키 버튼으로 시작·중지, LED 밝기, ADC 모드(다른 보드)는 넣지 않았다.
+
+시험 (2026-11-25, 보드 펌웨어 0.2, USB 3.0, CH375 드라이버, `usb/1-14`; 입력에 신호를 걸지 않아 샘플은 모두 0):
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo fmt --check`, `cargo clippy --workspace --all-targets` | 경고 없음 |
+| `cargo test --release --workspace` | 60개 모두 통과 (새로 명령·답 형식, 분주 번호, 문턱 코드, 전송 크기, 장치 경로의 일련번호, 두 장치 샘플레이트 합치기, 레벨 기억) |
+| `lvcli devices` | `usb/1-14  1a86:5537  WeAct Logic Analyzer V2 (U3)  CH375 드라이버  4 MHz~200 MHz` |
+| `lvcli bench -r 200M -s 400M -n 3 --level 3.3` | 3/3. 2.004~2.006 s(실효 199.4~199.6 MHz), 대기열 최대 3%, 마무리 58~118 ms |
+| `lvcli bench -r 100M -s 200M -n 3` / `-r 4M -s 4M -n 2` | 3/3 / 2/2 |
+| `lvcli capture -r 20M -s 20M` | 완료, 1.001 s, 첫 데이터 12 ms |
+| 잘못된 값 (`-r 24M`, `--level 5`) | "24000000 Hz cannot be sampled", "--level은 1.0~3.3 V입니다" |
+| `lvcli store-bench -s 400M` (무작위 데이터, 압축 안 됨) | 275 MB/s. 200 MHz(200 MB/s)보다 빠르다 |
+| 앱 (UI Automation): `--rate 200000000 --time 0.5`로 시작 → 시작 | 도구 막대에 "레벨"과 "입력 문턱 1.50 V", "완료 · 100,000,000 샘플 · 0.505 s" |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버) | 63개 모두 통과. U3 항목 8개: 20 MHz 0.25 s → 5,000,000 샘플, 200 MHz 0.1 s → 20,000,000 샘플(문턱 1.5 V), 문턱 3.3 V는 범위 밖 오류, 24 MHz는 U3 샘플레이트 목록과 함께 오류 |
+| 같은 시험 (Python 서버, 하드웨어 없이) | 52개 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` | 7개 모두 통과 (U3에서 4 MHz 1 M 샘플). 풀어 둔 패키지가 PATH에 Windows 폴더만 둔 채 `CH375DLL64.DLL`을 찾음 |
+
+실제 신호로 채널 순서(D0이 비트 0)를 확인하는 시험과 WinUSB로 바꾼 뒤의 시험은 아직 하지 않았다.
 
 ## PRD와 다르게 한 것
 

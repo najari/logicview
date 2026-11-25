@@ -5,7 +5,6 @@
 
 use std::path::{Path, PathBuf};
 
-use lv_fx2lafw::SAMPLERATES;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
@@ -126,6 +125,8 @@ pub struct Remembered {
     pub shown: Vec<bool>,
     pub trigger_text: String,
     pub pre_percent: u8,
+    /// Signal level in volts for devices with a threshold (WeAct U3).
+    pub level: f64,
 }
 
 impl Remembered {
@@ -133,7 +134,7 @@ impl Remembered {
     pub fn load(db: &AppDb, defaults: Remembered) -> Remembered {
         let mut r = defaults;
         if let Some(v) = db.get("capture.rate").and_then(|v| v.parse().ok())
-            && SAMPLERATES.contains(&v)
+            && lv_device::all_samplerates().contains(&v)
         {
             r.rate = v;
         }
@@ -181,6 +182,11 @@ impl Remembered {
         {
             r.pre_percent = p;
         }
+        if let Some(l) = db.get("capture.level").and_then(|v| v.parse().ok())
+            && lv_device::LEVELS.contains(&l)
+        {
+            r.level = l;
+        }
         r
     }
 
@@ -201,6 +207,7 @@ impl Remembered {
             ),
             ("trigger.text", self.trigger_text.clone()),
             ("trigger.pre_percent", self.pre_percent.to_string()),
+            ("capture.level", self.level.to_string()),
         ])
     }
 }
@@ -222,6 +229,7 @@ mod tests {
             shown: vec![true; 8],
             trigger_text: "0=f".into(),
             pre_percent: 10,
+            level: 3.3,
         }
     }
 
@@ -249,6 +257,7 @@ mod tests {
         r.shown[7] = false;
         r.trigger_text = "0=r,1=1".into();
         r.pre_percent = 25;
+        r.level = 1.8;
         r.save(&db).expect("save");
         drop(db);
         let db = AppDb::open(&path).expect("reopen");
@@ -289,6 +298,7 @@ mod tests {
             ("channels.names", "[\"only one\"]".into()),
             ("channels.shown", "not json".into()),
             ("trigger.pre_percent", "300".into()),
+            ("capture.level", "2.7".into()),
         ])
         .expect("set");
         assert_eq!(Remembered::load(&db, defaults()), defaults());

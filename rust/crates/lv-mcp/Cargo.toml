@@ -9,6 +9,6 @@ license.workspace = true
 log = "0.4.35"
 lv-capture = { path = "../lv-capture" }
 lv-decode = { path = "../lv-decode" }
-lv-fx2lafw = { path = "../lv-fx2lafw" }
+lv-device = { path = "../lv-device" }
 lv-store = { path = "../lv-store" }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }

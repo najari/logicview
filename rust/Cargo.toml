@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "crates/lv-fx2lafw",
+    "crates/lv-u3",
+    "crates/lv-device",
     "crates/lv-store",
     "crates/lv-capture",
     "crates/lv-decode",

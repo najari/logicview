@@ -51,9 +51,17 @@ impl FoundDevice {
     }
 }
 
+/// Bus ids in the order the OS lists them, for [`location_of`].
+pub fn bus_ids() -> Vec<String> {
+    match nusb::list_buses().wait() {
+        Ok(b) => b.map(|b| b.bus_id().to_string()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// `usb/<bus>-<port>.<port>`; buses are numbered from 1 in the order the OS
 /// lists them (Windows has no bus numbers, only long location paths).
-fn location_of(info: &nusb::DeviceInfo, buses: &[String]) -> String {
+pub fn location_of(info: &nusb::DeviceInfo, buses: &[String]) -> String {
     let chain: Vec<String> = info.port_chain().iter().map(|p| p.to_string()).collect();
     let bus = buses
         .iter()
@@ -65,10 +73,7 @@ fn location_of(info: &nusb::DeviceInfo, buses: &[String]) -> String {
 
 /// List supported devices (DEV-1, DEV-3).
 pub fn list_devices() -> Result<Vec<FoundDevice>, Error> {
-    let buses: Vec<String> = match nusb::list_buses().wait() {
-        Ok(b) => b.map(|b| b.bus_id().to_string()).collect(),
-        Err(_) => Vec::new(),
-    };
+    let buses = bus_ids();
     let mut out = Vec::new();
     for info in nusb::list_devices().wait()? {
         let Some(profile) = PROFILES

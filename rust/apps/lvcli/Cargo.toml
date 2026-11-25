@@ -12,5 +12,5 @@ env_logger = "0.11.11"
 log = "0.4.35"
 lv-capture = { path = "../../crates/lv-capture" }
 lv-decode = { path = "../../crates/lv-decode" }
-lv-fx2lafw = { path = "../../crates/lv-fx2lafw" }
+lv-device = { path = "../../crates/lv-device" }
 lv-store = { path = "../../crates/lv-store" }

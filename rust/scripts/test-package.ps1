@@ -6,7 +6,8 @@ environment variables.
   .\scripts\test-package.ps1 -Zip dist\logicview-0.1.7-windows-x64.zip -Python <python.exe> [-Hardware]
 
 -Python runs the test helpers (make-capture.py, mcp/tests/test_mcp.py); the
-package itself does not use it. -Hardware adds a capture from the analyzer.
+package itself does not use it. -Hardware adds a capture from each connected
+analyzer (FX2 at 1 MHz, WeAct U3 at 4 MHz).
 #>
 param(
     [Parameter(Mandatory)][string]$Zip,
@@ -50,10 +51,16 @@ Check 'import and csv export' ($csv[0] -eq 'Time [s],Channel 0,Channel 1,Channel
 
 if ($Hardware) {
     $devs = & $lv devices 2>&1
-    Check 'device found' (($devs -join ' ') -match '0925:3881') ($devs -join ' / ')
-    $cap = Join-Path $work 'hw.lvcap'
-    $r = & $lv capture -r 1M -s 1M -o $cap 2>&1
-    Check 'capture 1 M samples at 1 MHz' (($r -join ' ') -match '1,000,000') ($r | Select-Object -Last 3)
+    Check 'device found' (($devs -join ' ') -match '0925:3881|1a86:5537') ($devs -join ' / ')
+    # One capture per analyzer: location, VID:PID, rate.
+    foreach ($d in $devs) {
+        if ("$d" -notmatch '^(usb/\S+)\s+(0925:3881|1a86:5537)') { continue }
+        $loc = $Matches[1]
+        $rate = if ($Matches[2] -eq '1a86:5537') { '4M' } else { '1M' }
+        $cap = Join-Path $work "hw-$($loc -replace '\W', '-').lvcap"
+        $r = & $lv capture -d $loc -r $rate -s 1M -o $cap 2>&1
+        Check "capture 1 M samples at $rate from $loc" (($r -join ' ') -match '1,000,000') ($r | Select-Object -Last 3)
+    }
 }
 
 # MCP server from the package, through the repository's end-to-end test.

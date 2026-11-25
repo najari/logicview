@@ -331,7 +331,51 @@ def run(c, work, sr, hardware):
         return
     r, e = c.call('get_devices')
     devs = r['devices'] if r else []
-    check('get_devices', devs and devs[0]['deviceId'].startswith('fx2lafw'), e or devs)
+    check('get_devices', bool(devs), e or devs)
+    ids = [d['deviceId'] for d in devs]
+    fx2 = [i for i in ids if i.startswith('fx2lafw:')]
+    u3 = [i for i in ids if i.startswith('weact-u3:')]
+    if fx2:
+        run_fx2(c, work, fx2[0])
+    if u3:
+        run_u3(c, work, u3[0])
+
+
+def capture_length(c, work, cid, name):
+    import zipfile
+    saved = os.path.join(work, 'hw', name)
+    c.call('save_capture', captureId=cid, filepath=saved)
+    with zipfile.ZipFile(saved) as z:
+        return sum(i.file_size for i in z.infolist() if i.filename.startswith('logic'))
+
+
+def run_u3(c, work, dev):
+    """WeAct Logic Analyzer V2 (Rust server only)."""
+    os.makedirs(os.path.join(work, 'hw'), exist_ok=True)
+    for rate, secs in ((20_000_000, 0.25), (200_000_000, 0.1)):
+        r, e = c.call('start_capture', deviceId=dev,
+                      logicDeviceConfiguration={'logicChannels': {'digitalChannels': [0, 1, 2, 3, 4, 5, 6, 7]},
+                                                'digitalSampleRate': rate, 'digitalThresholdVolts': 1.5},
+                      captureConfiguration={'timedCaptureMode': {'durationSeconds': secs}})
+        check(f'U3 timed capture at {rate // 1_000_000} MHz', r is not None, e)
+        if r:
+            cid = r['captureId']
+            r2, e = c.call('wait_capture', captureId=cid)
+            check(f'U3 wait capture at {rate // 1_000_000} MHz', r2 is not None, e)
+            n = capture_length(c, work, cid, f'u3-{rate}.sr')
+            check(f'U3 capture length = {int(rate * secs)} samples', n == int(rate * secs), n)
+            c.call('close_capture', captureId=cid)
+    r, e = c.call('start_capture', deviceId=dev,
+                  logicDeviceConfiguration={'logicChannels': {'digitalChannels': [0]},
+                                            'digitalSampleRate': 20_000_000, 'digitalThresholdVolts': 3.3})
+    check('U3 threshold out of range', e and 'out of range' in e and '0.6 V to 1.5 V' in e, e)
+    r, e = c.call('start_capture', deviceId=dev,
+                  logicDeviceConfiguration={'logicChannels': {'digitalChannels': [0]},
+                                            'digitalSampleRate': 24_000_000})
+    check('U3 invalid samplerate lists its rates', e and '200000000' in e and '24000000' not in e, e)
+
+
+def run_fx2(c, work, dev):
     r, e = c.call('start_capture', logicDeviceConfiguration={'logicChannels': {'digitalChannels': [0, 1]},
                                                              'digitalSampleRate': 1000000},
                   captureConfiguration={'timedCaptureMode': {'durationSeconds': 0.25}})
@@ -370,6 +414,10 @@ def run(c, work, sr, hardware):
                                                              'digitalSampleRate': 1000000},
                   captureConfiguration={'digitalCaptureMode': {'triggerType': 3, 'triggerChannelIndex': 0}})
     check('pulse trigger refused', e and 'Pulse triggers' in e, e)
+    r, e = c.call('start_capture', deviceId=dev,
+                  logicDeviceConfiguration={'logicChannels': {'digitalChannels': [0]},
+                                            'digitalSampleRate': 1000000, 'digitalThresholdVolts': 1.5})
+    check('fx2 threshold refused', e and 'does not support a configurable threshold' in e, e)
 
 
 if __name__ == '__main__':

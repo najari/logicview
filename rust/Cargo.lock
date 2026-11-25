@@ -2046,7 +2046,7 @@ dependencies = [
  "log",
  "lv-capture",
  "lv-decode",
- "lv-fx2lafw",
+ "lv-device",
  "lv-mcp",
  "lv-store",
  "rfd",
@@ -2060,7 +2060,7 @@ version = "0.1.7"
 dependencies = [
  "crossbeam-channel",
  "log",
- "lv-fx2lafw",
+ "lv-device",
  "lv-store",
  "thiserror 2.0.21",
 ]
@@ -2074,6 +2074,16 @@ dependencies = [
  "lv-store",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "lv-device"
+version = "0.1.7"
+dependencies = [
+ "lv-fx2lafw",
+ "lv-u3",
+ "nusb",
  "thiserror 2.0.21",
 ]
 
@@ -2093,7 +2103,7 @@ dependencies = [
  "log",
  "lv-capture",
  "lv-decode",
- "lv-fx2lafw",
+ "lv-device",
  "lv-store",
  "serde_json",
 ]
@@ -2110,6 +2120,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lv-u3"
+version = "0.1.7"
+dependencies = [
+ "libloading 0.9.0",
+ "log",
+ "lv-fx2lafw",
+ "nusb",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lvcli"
 version = "0.1.7"
 dependencies = [
@@ -2119,7 +2140,7 @@ dependencies = [
  "log",
  "lv-capture",
  "lv-decode",
- "lv-fx2lafw",
+ "lv-device",
  "lv-store",
 ]
 

@@ -639,6 +639,25 @@ WeAct U3의 16채널(D0~D15)을 수집·저장·표시·디코딩한다.
 | 같은 시험 (Python 서버, 하드웨어 없이) / `extensions\tests\run-tests.ps1` | 52개 / 71개 모두 통과 |
 | `scripts\test-package.ps1 -Hardware` | 7개 모두 통과 |
 
+## 0.1.9 빌드·시험 (2026-11-25)
+
+`rust-v0.1.9`(`393e66e`)를 다시 시험했다. 연결된 장치는 WeAct U3(`usb/1-14`, 펌웨어 0.2, USB 3.0, CH375 드라이버)뿐이고
+FX2는 없었다. 입력에 신호를 걸지 않았다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release` | 성공, `lvcli --version`은 0.1.9 |
+| `cargo fmt --check`, `cargo clippy --workspace --all-targets` | 경고 없음 |
+| `cargo test --release --workspace` (`LOGICVIEW_SIGROK_DIR` 지정) | 67개 모두 통과 |
+| `lvcli devices` | U3, 채널 8/16, 4 MHz~200 MHz |
+| `lvcli bench -r 200M -s 400M -n 3 --level 3.3` (16채널, 400 MB/s) | **3/3**. 2.001~2.002 s(실효 199.78~199.90 MHz), 대기열 최대 3%, 마무리 69~74 ms |
+| 같은 bench `--channels 8` | 3/3. 실효 199.49~199.59 MHz, 대기열 최대 9% |
+| `lvcli bench -r 20M -s 20M -n 2` / `-r 4M -s 4M -n 2` | 2/2 / 2/2 |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버) | 67개 모두 통과 (U3 항목 포함) |
+| 같은 시험 (Python 서버, 하드웨어 없이) | 52개 모두 통과 |
+| `extensions	estsun-tests.ps1` | 71개 모두 통과 |
+| `scripts\package.ps1` → `scripts	est-package.ps1 -Hardware` | 958개 파일, zip 22.4 MB. 7개 모두 통과 |
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

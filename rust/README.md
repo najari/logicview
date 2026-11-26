@@ -754,6 +754,21 @@ FX2는 없었다. 입력에 신호를 걸지 않았고, 보드를 쓰는 시험�
 | `extensions\tests\run-tests.ps1` | 모두 통과 |
 | `scripts\test-package.ps1 -Hardware` (릴리스 zip) | 7개 모두 통과 |
 
+같은 날 `034656d`(README만 바뀜, 태그를 옮긴 커밋)에서 한 번 더 돌렸다 (U3만 연결, 신호 없음, 하나씩 따로).
+
+| 시험 | 결과 |
+| --- | --- |
+| build, fmt, clippy, `cargo test --release --workspace` | 경고 없음, 73개 모두 통과 |
+| `lvcli bench -r 200M -s 400M -n 3 --level 3.3` 16채널 / `--channels 8` | **3/3** (실효 199.85~199.89 MHz, 대기열 최대 3~6%, 마무리 63~82 ms) / **3/3** (199.54~199.64 MHz, 대기열 최대 2~5%) |
+| `lvcli bench -r 50M -s 50M -n 2 --channels 2` / `-r 20M -s 20M -n 2` / `-r 4M -s 4M -n 2` | 2/2 / 2/2 / 2/2 |
+| `lvcli fw-update la-v0.2.bin` (`--yes` 없이) / `--slot 5` | 슬롯 0 확인만 / 거절 |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버) / 같은 시험 (Python 서버, 하드웨어 없이) | 67개 / 52개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` (릴리스 zip) | 7개 모두 통과 |
+
+이번에는 수집이 끝난 뒤 마무리가 두 번 길었다: 50 MHz 2채널 2회째 689 ms, 20 MHz 1회째 559 ms (나머지는 20~84 ms).
+두 번 다 통과했고 실효 샘플레이트와 대기열은 평소와 같았다. 원인은 찾지 않았다 (PC의 디스크 쪽 지연으로 보인다).
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

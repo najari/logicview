@@ -719,6 +719,29 @@ WeAct U3LogicAnalyzer(PulseView 기반)의 "Device Options", "Settings", "FW Upd
 보드에 실제로 펌웨어를 쓰는 시험(업데이트 모드 진입, HID 지우기·쓰기·확인)과 보드 버튼을 눌러 수집을 시작·중지하는
 시험은 하지 않았다.
 
+## 0.1.10 빌드·시험 (2026-11-25)
+
+`rust-v0.1.10`(`58c6b6c`)을 시험했다. 연결된 장치는 WeAct U3(`usb/1-14`, 펌웨어 0.2, USB 3.0, CH375 드라이버)뿐이고
+FX2는 없었다. 입력에 신호를 걸지 않았고, 보드를 쓰는 시험은 하나씩 따로 돌렸다.
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo build --release` | 성공, `lvcli --version`은 0.1.10 |
+| `cargo fmt --check`, `cargo clippy --workspace --all-targets` | 경고 없음 |
+| `cargo test --release --workspace` (환경 변수 없이) | 73개 모두 통과 |
+| `lvcli devices` | U3, 채널 2/4/8/16, 4 MHz~200 MHz |
+| `lvcli bench -r 200M -s 400M -n 3 --level 3.3` (16채널, 400 MB/s) | **3/3**. 2.001 s(실효 199.86~199.87 MHz), 대기열 최대 3~6%, 마무리 73~83 ms |
+| 같은 bench `--channels 8` | **3/3**. 실효 199.46~199.60 MHz, 대기열 최대 2~3% |
+| `lvcli bench -r 50M -s 50M -n 2 --channels 2` (2채널 모드) | 2/2. 실효 49.67~49.68 MHz |
+| `lvcli bench -r 20M -s 20M -n 2` / `-r 4M -s 4M -n 2` | 2/2 / 2/2 |
+| `lvcli fw-update la-v0.2.bin` (WeAct 저장소의 v0.2, `--yes` 없이) / `--slot 5` | "128000 바이트 -> 0x08006000 (슬롯 0: 로직 애널라이저)", 보드·일련번호, 확인만 / "슬롯 5은 없습니다 (0~2)" |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버) | 67개 모두 통과 |
+| 같은 시험 (Python 서버, 하드웨어 없이) | 52개 모두 통과 |
+| `extensions\tests\run-tests.ps1 -Python D:\msys64\ucrt64\bin\python.exe` | 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` (릴리스 zip `logicview-0.1.10-windows-x64.zip`) | 7개 모두 통과 |
+
+이번에도 보드에 펌웨어를 실제로 쓰는 시험과 보드 버튼을 눌러 수집을 시작·중지하는 시험은 하지 않았다.
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

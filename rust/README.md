@@ -742,6 +742,18 @@ FX2는 없었다. 입력에 신호를 걸지 않았고, 보드를 쓰는 시험�
 
 이번에도 보드에 펌웨어를 실제로 쓰는 시험과 보드 버튼을 눌러 수집을 시작·중지하는 시험은 하지 않았다.
 
+2026-11-26에 `00a4895`(README만 바뀜, 태그를 옮긴 커밋)에서 한 번 더 돌렸다 (U3만 연결, 신호 없음, 하나씩 따로).
+
+| 시험 | 결과 |
+| --- | --- |
+| build, fmt, clippy, `cargo test --release --workspace` | 경고 없음, 73개 모두 통과 |
+| `lvcli bench -r 200M -s 400M -n 3 --level 3.3` 16채널 / `--channels 8` | **3/3** (실효 199.79~199.87 MHz, 대기열 최대 3~5%, 마무리 65~75 ms) / **3/3** (199.54~199.61 MHz) |
+| `lvcli bench -r 50M -s 50M -n 2 --channels 2` / `-r 20M -s 20M -n 2` / `-r 4M -s 4M -n 2` | 2/2 / 2/2 / 2/2 |
+| `lvcli fw-update la-v0.2.bin` (`--yes` 없이) / `--slot 5` | 슬롯 0 확인만 / 거절 |
+| `mcp/tests/test_mcp.py --hardware` (Rust 서버) / 같은 시험 (Python 서버, 하드웨어 없이) | 67개 / 52개 모두 통과 |
+| `extensions\tests\run-tests.ps1` | 모두 통과 |
+| `scripts\test-package.ps1 -Hardware` (릴리스 zip) | 7개 모두 통과 |
+
 ## PRD와 다르게 한 것
 
 - 그리기: Windows에서는 `WGPU_BACKEND`가 없으면 Direct3D 12를 쓴다 (0.1.4). wgpu가 먼저 고르는 Vulkan으로는

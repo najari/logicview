@@ -49,7 +49,7 @@ cd rust
 | `mcp/start-mcp.cmd` | 앱 폴더에서 MCP 서버 실행 |
 | `mcp/tests/test_mcp.py` | MCP 서버 종단 테스트 (HTTP로 모든 도구 호출, `--hardware`로 실제 캡처) |
 | `rust/` | Rust + egui로 새로 만든 버전: 수집·파형·디코딩·HLA·MCP를 실행 파일 하나로 ([아래](#rust-버전-logicview-0110), [rust/README.md](rust/README.md), [PRD](docs/prd-rust-logicview.md)) |
-| `docs/` | [Rust·egui 전환 검토](docs/rust-egui-review.md), [개발지시서(PRD)](docs/prd-rust-logicview.md) |
+| `docs/` | [Rust·egui 전환 검토](docs/rust-egui-review.md), [개발지시서(PRD)](docs/prd-rust-logicview.md), AURIX 디버그 프로브 [검토](docs/aurix-probe-review.md)·[개발지시서](docs/prd-aurix-probe.md) |
 
 ## 준비물
 

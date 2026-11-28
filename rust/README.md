@@ -17,6 +17,8 @@
 | `crates/lv-capture` | 수집 세션: USB 스레드 → 유계 대기열 → 저장 스레드, 진행 상태, 소프트웨어 트리거 |
 | `crates/lv-decode` | libsigrokdecode를 실행 중에 읽어 들여 디코더 스택 실행 (Saleae HLA 포함) |
 | `crates/lv-mcp` | MCP 서버: Saleae Logic 2 MCP 도구 15개 + `read_analyzer_frames` + `query_frames`, HTTP·stdio |
+| `crates/lv-dap` | AURIX DAP(2핀 디버그 포트) 프로토콜: 텔레그램, 연결·메모리 접근·리셋, CMSIS-DAP v2 선로, 가짜 타깃, miniWiggler 캡처 판독 |
+| `crates/lv-tas` | TAS 서버: aurix_debugger의 도구(probe-rs TriCore 포크 등)가 TasServer 대신 붙음 |
 | `apps/lvcli` | 명령줄 도구: `devices`, `capture`, `bench`, `info`, `export`, `import`, `decoders`, `decode`, `synth`, `store-bench` |
 | `apps/logicview` | egui 앱: 장치에서 수집(실시간 파형), `.lvcap`·`.sr` 열기, `.lvcap`·`.sr`·CSV로 저장, 휠 줌, 끌기 이동, 커서 값, 마커 2개, 채널 이름·숨기기 |
 
@@ -56,6 +58,7 @@ lvcli synth --samples 50M -o synth.lvcap                 # 화면 시험용 합�
 logicview cap.lvcap                                      # .sr도 열림 (임시 폴더에 .lvcap으로 바꿔 엶)
 logicview --rate 1M --time 0.5 --trigger 0=f             # 수집 도구 막대 미리 설정 (--time 초 | manual)
 logicview --bench synth.lvcap                            # 줌·이동을 자동으로 하고 프레임 시간 출력
+lvcli aurix serve                                        # AURIX 디버그 프로브의 TAS 서버 (아래 "AURIX 디버그 프로브")
 ```
 
 ## M0 시험 결과 (2026-11-10)
@@ -768,6 +771,91 @@ FX2는 없었다. 입력에 신호를 걸지 않았고, 보드를 쓰는 시험�
 
 이번에는 수집이 끝난 뒤 마무리가 두 번 길었다: 50 MHz 2채널 2회째 689 ms, 20 MHz 1회째 559 ms (나머지는 20~84 ms).
 두 번 다 통과했고 실효 샘플레이트와 대기열은 평소와 같았다. 원인은 찾지 않았다 (PC의 디스크 쪽 지연으로 보인다).
+
+## AURIX 디버그 프로브 (2026-11-28)
+
+WeAct 보드를 AURIX(TC2xx·TC3xx)의 디버그 프로브로 쓴다. `lvcli aurix serve`가 TAS 서버가 되어
+[aurix_debugger](https://github.com/najari/aurix_debugger)의 도구(probe-rs TriCore 포크 등)가 Infineon TasServer와
+DAS 어댑터 없이 붙는다. 배경과 선택 이유는 [검토](../docs/aurix-probe-review.md), 요구사항은
+[개발지시서](../docs/prd-aurix-probe.md). **하드웨어 없이 검증할 수 있는 데까지 했고, 실제 보드에서는 아직 돌려 보지 않았다.**
+
+```text
+probe-rs 포크 · aurix-debugger 앱 ──TAS(TCP 24817)──> lvcli aurix serve
+    lv-tas (TAS 서버) → lv-dap (DAP 텔레그램) → CMSIS-DAP v2 (WeAct 슬롯 1) → DAP0·DAP1·리셋 → AURIX
+```
+
+- **`lv-dap`**: AURIX의 2핀 DAP 선로 프로토콜. 텔레그램(시작 비트, 명령 5비트, 인자 길이 6비트, 인자, CRC6),
+  응답 분석, 블록 읽기의 CRC32, 연결 순서(리셋 없이 / 리셋 후 정지 / 리셋 후 실행), 8·16·32비트와 블록 접근.
+  선로는 `Wire` 트레이트 뒤에 있다: CMSIS-DAP v2(`DAP_SWD_Sequence`로 SWCLK = DAP0, SWDIO = DAP1, nRESET = 리셋),
+  가짜 타깃(`sim`).
+- **근거**: 프로토콜은 공개 분석 자료 [epozzobon/tricore-things](https://github.com/epozzobon/tricore-things)를 읽고 새로 썼다.
+  그 저장소의 실제 캡처(miniWiggler로 TC297·TC397에 붙은 Infineon 도구의 USB 트래픽 6개)를 `lv_dap::mwtrace`가
+  텔레그램까지 풀고, 시험이 우리 코드와 대조한다. 캡처와 원본 코드는 이 저장소에 넣지 않았다(라이선스 표시 없음).
+  환경 변수 `LV_TRICORE_TRACES`가 그 `traces` 폴더를 가리킬 때만 대조 시험이 돌고, 없으면 건너뛴다.
+- **캡처에서 확인해 그대로 따른 것**:
+  - 모든 접근 앞에 "IO 클라이언트 1"과 `IOCONF = 0xC1`을 보낸다. 워드 접근은 1워드여도 블록 명령으로 한다.
+  - 리셋 없이 붙기: 동기(답 `0xAAAAAAAA`) → DAPISC `0x4ABBAF530F00` → JTAG 리셋 → 첫 `IOCONF` 쓰기는 장치가
+    답하지 않을 수 있고, `IOINFO`를 읽은 뒤 다시 보내면 된다(도구도 그렇게 한다).
+  - 리셋 후 정지: 1 MHz, 리셋 선, 빈 클럭 200개, DAPISC 두 개(`0xF00`, `0x4ABBAF530400`), `OJCONF = 0x503`,
+    `IOINFO`가 `0x80`에서 `0x400`이 될 때까지 읽기, `OJCONF = 0x4501`, `IOCONF = 0xC1`.
+  - 거절된 접근(버스 오류)은 응답이 없다. 그 뒤 `IOINFO`를 읽으면 다음 접근이 된다. `IOINFO` 값(TC29x `0x20`·`0x60`·`0xA0`,
+    TC39x `0xFE24`)은 오류 문장에 그대로 싣는다.
+  - 블록 읽기에서 클럭을 주는 바이트 수는 `워드 × 38 / 8 + 12`(도구와 같다). 블록 쓰기는 워드마다 5바이트를 보내고
+    끝에 주소 레지스터를 다시 쓴다.
+  - 리셋 순서로 설정한 뒤에는 응답이 8비트 일찍 온다. JTAG ID 응답은 시작 비트 없이 첫 비트부터 값이다
+    (CRC6은 앞에 붙은 1에 영향받지 않아 위치를 내용으로 알 수 없다. 설정을 기억해 위치를 정한다).
+- **`lv-tas`**: TAS 서버. SERVER_CONNECT, GET_TARGETS, SESSION_START, PING, SET_DEVICE_KEY, DEVICE_CONNECT(0 리셋 없이,
+  1 리셋, 3 리셋 후 정지), PL0 프레임(WR·RD 8·16·32·64, 블록, 주소 맵 0과 15). 세션 여러 개, 한 세션이 리셋하면
+  다른 세션의 다음 요청 하나를 `DEV_RESET`(0x44)으로 거절, 실패한 전송은 `0x8D`·그 뒤는 `0x98`. 맵 15에는 클럭
+  레지스터(`0x000C0100`)와 도구가 읽는 글자 블록 세 개(`0x0000`, `0x8000`, `0xD000`)만 있다. 형식은 포크의
+  `tas/protocol.rs`와 aurix_debugger의 `TAS_PROTOCOL_CAPTURE.md`(TasServer V2.0 캡처)를 따랐다.
+- **`lvcli aurix`**:
+
+```powershell
+lvcli aurix probes                               # CMSIS-DAP 프로브 목록 (WeAct는 슬롯 1에서)
+lvcli aurix info [--reset]                       # 연결, JTAG ID
+lvcli aurix read 0xF0000464 4                    # 메모리 읽기 (-o 파일)
+lvcli aurix write 0x70000000 "78 56 34 12"
+lvcli aurix reset [--halt]
+lvcli aurix serve [--port 24817] [--bind 0.0.0.0]   # TAS 서버
+lvcli aurix trace capture.pcap                   # miniWiggler USB 캡처를 텔레그램으로
+# 공통: --probe <일련번호>, --speed 5M, --sim [JTAG ID] (프로브 없이 가짜 타깃)
+```
+
+시험 (2026-11-28, 하드웨어 없음; Rust 1.99.1 `x86_64-pc-windows-gnu`):
+
+| 시험 | 결과 |
+| --- | --- |
+| `cargo fmt --all --check`, `cargo clippy --workspace --all-targets` | 경고 없음 |
+| `cargo test --workspace` (`LV_TRICORE_TRACES` 지정) | 122개 모두 통과. 새 시험 49개: `lv-dap` 31, `lv-tas` 16, `lvcli` 2 |
+| 캡처 대조: 인코딩 | 캡처 6개의 텔레그램 97,326개와 블록 쓰기 워드를 우리 인코더로 다시 만들면 도구가 보낸 바이트와 전부 같다 |
+| 캡처 대조: 응답 | 값이 있는 응답은 CRC6이 맞고(틀린 것 2개, 둘 다 도구가 클럭을 바꿔 보던 때의 DAPISC 응답), 끝까지 온 블록 읽기 9,929개는 모두 CRC32가 맞다 |
+| 캡처 재생: 연결 | 캡처의 실제 응답을 돌려주는 선로에서 우리 링크가 TC297에 리셋 없이 붙고(JTAG ID `0x201E9083`, 첫 `IOCONF` 무응답 뒤 재시도), TC397에 리셋 후 정지로 붙는다(`0x20205083`). 우리가 클럭을 주는 바이트 수가 도구와 다르면 실패하게 했다 |
+| 캡처 재생: 블록 | 여러 워드의 블록 쓰기와 블록 읽기가 도구와 같은 바이트·같은 순서·같은 읽기 길이로 나가고, 읽은 값이 같다 |
+| 가짜 타깃 | 연결 세 가지, 8·16·32비트와 블록(1~256워드), 정렬 안 된 주소·길이 나누기, 버스 오류 뒤 바로 다음 접근, 블록 CRC 오류 재시도, 잠긴 칩("디버그 암호"), 선로에 아무것도 없을 때("배선 확인") |
+| CMSIS-DAP | 가짜 프로브 펌웨어(패킷 64·512·1024바이트)를 거쳐 같은 시험. 요청·응답이 패킷 크기를 넘지 않고, 리셋은 nRESET 핀만 건드린다. `DAP_SWD_Sequence`가 없는 펌웨어는 그 이유를 적은 오류 |
+| TAS 서버 (우리 시험 클라이언트) | 대상 조회, 세션, 연결, 한 프레임에 여러 전송, 1 KiB 블록, 버스 오류 `0x8D`·`0x98`, 세션 2개와 리셋 알림, 클럭 레지스터, 모르는 명령·맵, 장치가 없을 때, 서버 종료 |
+| **probe-rs 포크의 TAS 클라이언트** (`b5c5a3e`, 고치지 않음) + `lvcli aurix serve --sim 0x401DA083` | `bus_read 0xF0000464 4` → `83 a0 1d 40`(JTAG ID로 TC27x를 자동 감지해 세션까지). `tas_info` → 대상 이름, JTAG ID, 세 코어의 DBGSR·PC 읽기, `--idle 5`에서 PING 2회. `tas_clock 1000000 6000000` → 클럭을 쓰고 되읽은 값이 같음, 끝에 5 MHz로 되돌림. `tas_reset_errors` → B가 리셋(리셋 후 정지), A는 첫 프레임이 `DEV_RESET`으로 한 번 거절되고 다시 보내 통과("A 1, B 0", 550 프레임 ok) |
+| `lvcli aurix … --sim` | `info`, `info --reset --speed 2M`, `read`, `write`, `reset --halt`, `trace` 동작. 프로브 없이 `info` → "CMSIS-DAP 프로브가 없습니다. … 슬롯 1 …" |
+
+가짜 타깃에는 코어가 없다(메모리와 DAP 응답만). 그래서 정지·스텝·브레이크포인트·플래시는 하드웨어 없이 확인하지 않았다.
+
+실제 보드에서 확인할 것 (하지 않음):
+
+1. WeAct 보드 버튼을 2초 눌러 슬롯 1(표시등 파란색)로 바꾸고 `lvcli aurix probes`에 보이는지. 이 PC에서 슬롯 0의
+   보드는 드라이버 설치 실패 상태(`CM_PROB_FAILED_INSTALL`)지만, 슬롯 1의 CMSIS-DAP는 WinUSB라 드라이버 없이 붙을 것으로 본다.
+2. 슬롯 1 펌웨어가 `DAP_SWD_Sequence`(0x1D)를 지원하는지. 없으면 `lvcli`가 그렇게 알린다.
+3. 배선: D6 → DAP0, D8 → DAP1, D7 → PORST, GND. **IO가 3.3 V인 보드에서만.** WeAct의 IO 레벨을 3.3 V로(버튼 짧게).
+   대상 보드가 DAP 모드로 뜨는지(리셋이 풀릴 때 TRST가 High). 보드 내장 어댑터와 TasServer는 끈다.
+4. `lvcli aurix info` → JTAG ID. 안 되면 FX2 애널라이저로 D6·D8을 수집해(DAP 클럭 `--speed 500k` 정도) 클럭 에지와
+   응답 위치를 본다. CMSIS-DAP는 클럭이 쉴 때 High이고 miniWiggler는 Low다.
+5. `lvcli aurix read 0xF0000464 4`(JTAG ID와 같은 값), RAM에 쓰고 읽기, `info --reset`.
+6. `lvcli aurix serve` + 포크의 `tas_info`, `hw_smoke`, `probe-rs dap-server`와 aurix-debugger 앱.
+7. 속도: 포크의 `perf_measure`. USB 왕복이 텔레그램 묶음마다 있어서 miniWiggler보다 느릴 수 있다.
+
+하지 않은 것: 슬롯 2 자체 펌웨어, FTDI로 직접 구동, 디버그 암호 전송, EEC(주소 맵 1), 프로브를 뽑았다 꽂았을 때 다시 열기,
+8·16비트 쓰기의 캡처 대조(캡처에 없다. 공개 구현이 실기에서 된다고 한 방식을 따랐다), 리셋 후 실행(`OJCONF = 0x501`)의
+캡처 대조(캡처에서 이 쓰기는 한 번 나오고 응답이 없었다), 앱·MCP의 프로브 기능, DAP 선로 디코더.
 
 ## PRD와 다르게 한 것
 

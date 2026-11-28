@@ -11,6 +11,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 env_logger = "0.11.11"
 log = "0.4.35"
 lv-capture = { path = "../../crates/lv-capture" }
+lv-dap = { path = "../../crates/lv-dap" }
 lv-decode = { path = "../../crates/lv-decode" }
 lv-device = { path = "../../crates/lv-device" }
 lv-store = { path = "../../crates/lv-store" }
+lv-tas = { path = "../../crates/lv-tas" }

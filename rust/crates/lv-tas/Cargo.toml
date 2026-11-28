@@ -1,0 +1,10 @@
+[package]
+name = "lv-tas"
+description = "A TAS (Infineon Tool Access Socket) server on top of lv-dap: AURIX debug tools connect to it as to TasServer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+log = "0.4.35"
+lv-dap = { path = "../lv-dap" }

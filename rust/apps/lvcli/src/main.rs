@@ -1,5 +1,6 @@
 //! `lvcli`: logicview from the command line (AUT-1, AUT-2).
 
+mod aurix;
 mod decode;
 mod synth;
 mod units;
@@ -145,6 +146,11 @@ enum Cmd {
         #[arg(short, long, default_value = "store-bench.lvcap")]
         output: PathBuf,
     },
+    /// AURIX 디버그 프로브: CMSIS-DAP 프로브(WeAct 슬롯 1)로 DAP 핀에 연결, TAS 서버
+    Aurix {
+        #[command(subcommand)]
+        cmd: aurix::AurixCmd,
+    },
     /// 화면 시험용 합성 캡처 만들기
     Synth {
         #[arg(short, long, default_value = "50M")]
@@ -263,6 +269,7 @@ fn run(cli: Cli) -> Result<()> {
             in_bootloader,
             yes,
         } => fw_update(&file, slot, device.as_deref(), in_bootloader, yes),
+        Cmd::Aurix { cmd } => aurix::run(cmd),
         Cmd::StoreBench { samples, output } => synth::store_bench(parse_si(&samples)?, &output),
         Cmd::Synth {
             samples,

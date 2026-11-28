@@ -2078,6 +2078,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lv-dap"
+version = "0.1.10"
+dependencies = [
+ "log",
+ "nusb",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lv-decode"
 version = "0.1.10"
 dependencies = [
@@ -2132,6 +2141,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lv-tas"
+version = "0.1.10"
+dependencies = [
+ "log",
+ "lv-dap",
+]
+
+[[package]]
 name = "lv-u3"
 version = "0.1.10"
 dependencies = [
@@ -2152,9 +2169,11 @@ dependencies = [
  "env_logger",
  "log",
  "lv-capture",
+ "lv-dap",
  "lv-decode",
  "lv-device",
  "lv-store",
+ "lv-tas",
 ]
 
 [[package]]

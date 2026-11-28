@@ -1,0 +1,11 @@
+[package]
+name = "lv-dap"
+description = "Infineon AURIX DAP (2-pin debug port) telegrams, link and wire drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+log = "0.4.35"
+nusb = "0.2.9"
+thiserror = "2.0.21"
